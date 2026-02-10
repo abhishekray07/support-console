@@ -5,13 +5,83 @@ Stores file data keyed by UUID with automatic TTL expiry,
 memory cap enforcement, and consumption-based eviction.
 """
 
+import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
 
+import magic as libmagic
+
 # Defaults
 DEFAULT_MAX_TOTAL_BYTES = 200 * 1024 * 1024  # 200 MB
 DEFAULT_TTL_SECONDS = 3600.0                   # 1 hour
+
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_TEXT_CONTENT = 500 * 1024      # 500 KB for text sent to Claude
+
+ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+ALLOWED_TEXT_EXTENSIONS = {
+    ".txt", ".log", ".csv", ".json", ".xml", ".yaml",
+    ".py", ".js", ".ts", ".html", ".css", ".md",
+    ".sh", ".sql", ".toml", ".ini", ".cfg", ".conf",
+}
+ALLOWED_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS | ALLOWED_TEXT_EXTENSIONS
+
+# Exact set of image MIME types we accept — no prefix matching
+_ALLOWED_IMAGE_MIMES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+
+class ValidationError(ValueError):
+    """Raised when a file fails validation."""
+    pass
+
+
+def sanitize_filename(name: str) -> str:
+    """Sanitize an uploaded filename: basename only, no control chars, max 255."""
+    # Extract basename (handles both / and \ separators)
+    name = os.path.basename(name.replace("\\", "/"))
+    # Strip null bytes and control characters
+    name = re.sub(r"[\x00-\x1f\x7f]", "", name)
+    # Truncate
+    if len(name) > 255:
+        base, ext = os.path.splitext(name)
+        name = base[: 255 - len(ext)] + ext
+    return name or "unnamed"
+
+
+def detect_media_type(data: bytes) -> str:
+    """Detect the MIME type of a file using libmagic. Returns the detected MIME string."""
+    return libmagic.from_buffer(data[:2048], mime=True)
+
+
+def validate_file(*, name: str, data: bytes) -> None:
+    """Validate an uploaded file. Raises ValidationError on failure."""
+    # Size check
+    if len(data) > MAX_FILE_SIZE:
+        raise ValidationError(
+            f"File '{name}' exceeds {MAX_FILE_SIZE // (1024 * 1024)}MB limit"
+        )
+
+    # Extension check
+    _, ext = os.path.splitext(name.lower())
+    if ext not in ALLOWED_EXTENSIONS:
+        raise ValidationError(f"Unsupported file type: '{ext}'")
+
+    # Image validation: check magic bytes agree with exact MIME set
+    if ext in ALLOWED_IMAGE_EXTENSIONS:
+        detected = detect_media_type(data)
+        if detected not in _ALLOWED_IMAGE_MIMES:
+            raise ValidationError(
+                f"File '{name}' has extension '{ext}' but detected type is '{detected}'"
+            )
+
+    # Text validation: must be valid UTF-8
+    if ext in ALLOWED_TEXT_EXTENSIONS:
+        try:
+            data.replace(b"\x00", b"").decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValidationError(f"File '{name}' is not valid UTF-8 text")
 
 
 @dataclass
