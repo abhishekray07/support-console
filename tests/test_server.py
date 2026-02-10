@@ -179,3 +179,197 @@ class TestStaticFiles:
         resp = await client.get("/")
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
+
+
+class TestUploadEndpoint:
+    """Tests for the POST /api/upload endpoint."""
+
+    async def test_upload_single_text_file(self, client):
+        files = [("files", ("test.txt", b"hello world", "text/plain"))]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["files"]) == 1
+        assert data["files"][0]["name"] == "test.txt"
+        assert data["files"][0]["size"] == 11
+
+    async def test_upload_multiple_files(self, client):
+        files = [
+            ("files", ("a.txt", b"aaa", "text/plain")),
+            ("files", ("b.txt", b"bbb", "text/plain")),
+        ]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()["files"]) == 2
+
+    async def test_upload_rejects_without_csrf_header(self, client):
+        files = [("files", ("test.txt", b"hello", "text/plain"))]
+        resp = await client.post("/api/upload", files=files)
+        assert resp.status_code == 403
+
+    async def test_upload_rejects_disallowed_type(self, client):
+        files = [("files", ("evil.exe", b"MZ\x90\x00", "application/octet-stream"))]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 415
+
+    async def test_upload_rejects_oversized_file(self, client):
+        big_data = b"x" * (10 * 1024 * 1024 + 1)
+        files = [("files", ("big.txt", big_data, "text/plain"))]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 413
+
+    async def test_upload_rejects_too_many_files(self, client):
+        files = [("files", (f"f{i}.txt", b"x", "text/plain")) for i in range(6)]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 400
+
+    async def test_upload_rejects_no_files(self, client):
+        """FastAPI returns 422 when required File(...) field is missing."""
+        resp = await client.post(
+            "/api/upload",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 422
+
+    async def test_upload_rate_limit(self, client):
+        """Exceeding upload rate limit returns 429."""
+        headers = {"X-Requested-With": "XMLHttpRequest"}
+        for i in range(10):
+            files = [("files", (f"f{i}.txt", b"x", "text/plain"))]
+            resp = await client.post("/api/upload", files=files, headers=headers)
+            assert resp.status_code == 200
+
+        # 11th request should be rate-limited
+        files = [("files", ("extra.txt", b"x", "text/plain"))]
+        resp = await client.post("/api/upload", files=files, headers=headers)
+        assert resp.status_code == 429
+
+    async def test_upload_memory_cap(self, app_with_client):
+        """Exceeding file store memory cap returns 507."""
+        app, client = app_with_client
+        # Set a tiny cap so we can trigger it easily
+        app.state.console.file_store._max_total_bytes = 100
+
+        files = [("files", ("big.txt", b"x" * 200, "text/plain"))]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 507
+
+
+class TestFileIdResolution:
+    """Tests for file ID resolution in the WebSocket handler path."""
+
+    async def test_file_store_integration(self, app_with_client):
+        """File store on AppState can store and pop entries."""
+        app, client = app_with_client
+        store = app.state.console.file_store
+
+        entry = store.add(name="test.txt", media_type="text/plain", data=b"hello")
+        assert store.get(entry.id) is not None
+
+        popped = store.pop(entry.id)
+        assert popped.name == "test.txt"
+        assert store.get(entry.id) is None
+
+    async def test_duplicate_file_ids_deduplicated(self, app_with_client):
+        """Duplicate file IDs are deduplicated before resolution."""
+        app, client = app_with_client
+        store = app.state.console.file_store
+
+        entry = store.add(name="test.txt", media_type="text/plain", data=b"hello")
+        file_id = entry.id
+
+        # Simulate what WS handler does with deduplication
+        file_ids = [file_id, file_id]
+        file_ids = list(dict.fromkeys(file_ids))  # dedup
+        assert len(file_ids) == 1
+
+        # Pop should succeed exactly once
+        popped = store.pop(file_ids[0])
+        assert popped is not None
+        assert popped.name == "test.txt"
+        assert store.get(file_id) is None
+
+    async def test_upload_then_retrieve(self, app_with_client):
+        """Upload a file, then verify it's in the file store."""
+        app, client = app_with_client
+
+        files = [("files", ("test.txt", b"hello", "text/plain"))]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 200
+        file_id = resp.json()["files"][0]["id"]
+
+        # Verify it's in the store
+        entry = app.state.console.file_store.get(file_id)
+        assert entry is not None
+        assert entry.data == b"hello"
+
+
+class TestUploadAndChatIntegration:
+    """Integration test: upload files, then verify they are in the store."""
+
+    async def test_full_upload_flow(self, app_with_client):
+        """Upload files via HTTP, verify store, then pop (simulating WS handler)."""
+        app, client = app_with_client
+        store = app.state.console.file_store
+
+        # Upload
+        files = [
+            ("files", ("readme.md", b"# Hello\n", "text/markdown")),
+            ("files", ("data.csv", b"a,b\n1,2\n", "text/csv")),
+        ]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 200
+        uploaded = resp.json()["files"]
+        assert len(uploaded) == 2
+
+        # Verify both are in store
+        for f in uploaded:
+            assert store.get(f["id"]) is not None
+
+        # Simulate WS handler: pop files
+        resolved = []
+        for f in uploaded:
+            entry = store.pop(f["id"])
+            assert entry is not None
+            resolved.append(entry)
+
+        assert len(resolved) == 2
+        assert resolved[0].name == "readme.md"
+        assert resolved[1].name == "data.csv"
+
+        # Verify they're gone from store
+        for f in uploaded:
+            assert store.get(f["id"]) is None
+        assert store.total_bytes == 0

@@ -21,6 +21,14 @@
     kernelPollInterval: 10000,
     chatAutoScrollThreshold: 80,
     maxInputHeight: 160,
+    maxFileSize: 10 * 1024 * 1024,
+    maxFiles: 5,
+    allowedImageTypes: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
+    allowedTextExtensions: [
+      '.txt', '.log', '.csv', '.json', '.xml', '.yaml',
+      '.py', '.js', '.ts', '.html', '.css', '.md',
+      '.sh', '.sql', '.toml', '.ini', '.cfg', '.conf',
+    ],
   };
 
   // --------------------------------------------------------
@@ -51,6 +59,11 @@
 
     // Divider drag
     isDragging: false,
+
+    // File uploads
+    pendingFiles: [],
+    isUploading: false,
+    dragCounter: 0,
   };
 
   // --------------------------------------------------------
@@ -75,6 +88,11 @@
     dom.clearNotebook = document.getElementById('clear-notebook');
     dom.reconnectingOverlay = document.getElementById('reconnecting-overlay');
     dom.main = document.getElementById('main');
+    dom.attachBtn = document.getElementById('attach-btn');
+    dom.fileInput = document.getElementById('file-input');
+    dom.attachmentPreview = document.getElementById('attachment-preview');
+    dom.dropOverlay = document.getElementById('drop-overlay');
+    dom.fileAnnounce = document.getElementById('file-announce');
   }
 
   // --------------------------------------------------------
@@ -151,6 +169,23 @@
 
   function generateId() {
     return 'id-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+  }
+
+  function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function getFileExtension(name) {
+    var dot = name.lastIndexOf('.');
+    return dot >= 0 ? name.slice(dot).toLowerCase() : '';
+  }
+
+  function isAllowedFile(file) {
+    if (CONFIG.allowedImageTypes.indexOf(file.type) !== -1) return true;
+    var ext = getFileExtension(file.name);
+    return CONFIG.allowedTextExtensions.indexOf(ext) !== -1;
   }
 
   // --------------------------------------------------------
@@ -322,9 +357,8 @@
     state.isStreaming = false;
     state.currentAssistantEl = null;
     state.currentAssistantContent = '';
-    dom.chatStreaming.classList.add('hidden');
-    dom.chatInput.disabled = false;
-    dom.chatSend.disabled = false;
+    hideStreamingStatus();
+    setInputsDisabled(false);
     dom.chatInput.focus();
   }
 
@@ -338,9 +372,8 @@
     state.isStreaming = false;
     state.currentAssistantEl = null;
     state.currentAssistantContent = '';
-    dom.chatStreaming.classList.add('hidden');
-    dom.chatInput.disabled = false;
-    dom.chatSend.disabled = false;
+    hideStreamingStatus();
+    setInputsDisabled(false);
 
     appendSystemMessage('Error: ' + (data.error || 'Unknown error'), 'error');
     autoScrollChat();
@@ -355,21 +388,37 @@
     if (welcome) welcome.remove();
   }
 
-  function createUserMessage(text) {
+  function createUserMessage(text, attachments) {
     clearWelcome();
-    const el = document.createElement('div');
+    var el = document.createElement('div');
     el.className = 'message message-user';
 
-    const roleEl = document.createElement('div');
+    var roleEl = document.createElement('div');
     roleEl.className = 'message-role';
     roleEl.textContent = 'You';
 
-    const contentEl = document.createElement('div');
+    var contentEl = document.createElement('div');
     contentEl.className = 'message-content';
-    contentEl.textContent = text;
+    if (text) {
+      contentEl.textContent = text;
+    }
 
     el.appendChild(roleEl);
     el.appendChild(contentEl);
+
+    // Attachment chips
+    if (attachments && attachments.length > 0) {
+      var chipsEl = document.createElement('div');
+      chipsEl.className = 'message-attachments';
+      for (var i = 0; i < attachments.length; i++) {
+        var chip = document.createElement('span');
+        chip.className = 'attachment-chip';
+        chip.textContent = attachments[i].name + ' (' + formatFileSize(attachments[i].size) + ')';
+        chipsEl.appendChild(chip);
+      }
+      el.appendChild(chipsEl);
+    }
+
     dom.chatMessages.appendChild(el);
     autoScrollChat();
     return el;
@@ -545,27 +594,76 @@
     }
   }
 
-  function sendMessage() {
-    const text = dom.chatInput.value.trim();
-    if (!text || state.isStreaming) return;
+  async function sendMessage() {
+    var text = dom.chatInput.value.trim();
+    if ((!text && state.pendingFiles.length === 0) || state.isStreaming || state.isUploading) return;
 
     if (!state.wsConnected) {
       appendSystemMessage('Not connected to server. Please wait for reconnection.', 'error');
       return;
     }
 
-    // Show user message
-    createUserMessage(text);
+    // Show user message with attachment info
+    var attachmentMeta = state.pendingFiles.map(function (f) {
+      return { name: f.name, size: f.size, type: f.type };
+    });
+    createUserMessage(text, attachmentMeta.length > 0 ? attachmentMeta : null);
 
-    // Send to server
-    const payload = {
-      message: text,
+    var fileIds = [];
+
+    // Upload files if any
+    if (state.pendingFiles.length > 0) {
+      state.isUploading = true;
+      setInputsDisabled(true);
+      showStreamingStatus('Uploading files...');
+
+      try {
+        var formData = new FormData();
+        for (var i = 0; i < state.pendingFiles.length; i++) {
+          formData.append('files', state.pendingFiles[i]);
+        }
+
+        var resp = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          body: formData,
+        });
+
+        if (!resp.ok) {
+          var err = await resp.json().catch(function () { return { detail: 'Upload failed' }; });
+          throw new Error(err.detail || 'Upload failed (' + resp.status + ')');
+        }
+
+        var result = await resp.json();
+        fileIds = result.files.map(function (f) { return f.id; });
+      } catch (e) {
+        state.isUploading = false;
+        setInputsDisabled(false);
+        hideStreamingStatus();
+        appendSystemMessage('Upload failed: ' + e.message, 'error');
+        return; // Keep files for retry
+      }
+
+      // Clear pending files on success
+      state.pendingFiles = [];
+      renderAttachmentPreview();
+      state.isUploading = false;
+    }
+
+    // Send to server via WebSocket
+    var payload = {
+      message: text || '(see attached files)',
       messages: state.messages,
     };
+    if (fileIds.length > 0) {
+      payload.file_ids = fileIds;
+    }
 
     try {
       state.ws.send(JSON.stringify(payload));
     } catch (e) {
+      setInputsDisabled(false);
+      hideStreamingStatus();
       appendSystemMessage('Failed to send message: ' + e.message, 'error');
       return;
     }
@@ -574,8 +672,24 @@
     state.isStreaming = true;
     dom.chatInput.value = '';
     dom.chatInput.style.height = 'auto';
-    dom.chatInput.disabled = true;
-    dom.chatSend.disabled = true;
+    setInputsDisabled(true);
+    showStreamingStatus('Assistant is responding...');
+  }
+
+  function setInputsDisabled(disabled) {
+    dom.chatInput.disabled = disabled;
+    dom.chatSend.disabled = disabled;
+    dom.attachBtn.disabled = disabled;
+  }
+
+  function showStreamingStatus(text) {
+    dom.chatStreaming.classList.remove('hidden');
+    var label = dom.chatStreaming.querySelector('.streaming-label');
+    if (label) label.textContent = text;
+  }
+
+  function hideStreamingStatus() {
+    dom.chatStreaming.classList.add('hidden');
   }
 
   // --------------------------------------------------------
@@ -1098,6 +1212,204 @@
   }
 
   // --------------------------------------------------------
+  // File Upload
+  // --------------------------------------------------------
+
+  function setupFileUpload() {
+    // Paperclip button opens file picker
+    dom.attachBtn.addEventListener('click', function () {
+      if (!state.isStreaming && !state.isUploading) {
+        dom.fileInput.click();
+      }
+    });
+
+    // File input change
+    dom.fileInput.addEventListener('change', function () {
+      addFiles(Array.from(this.files));
+      this.value = ''; // reset so same file can be re-selected
+    });
+
+    // Drag and drop on chat panel
+    dom.chatPanel.addEventListener('dragenter', function (e) {
+      e.preventDefault();
+      state.dragCounter++;
+      if (state.dragCounter === 1) {
+        dom.dropOverlay.classList.remove('hidden');
+      }
+    });
+
+    dom.chatPanel.addEventListener('dragleave', function (e) {
+      e.preventDefault();
+      state.dragCounter--;
+      if (state.dragCounter === 0) {
+        dom.dropOverlay.classList.add('hidden');
+      }
+    });
+
+    dom.chatPanel.addEventListener('dragover', function (e) {
+      e.preventDefault();
+    });
+
+    dom.chatPanel.addEventListener('drop', function (e) {
+      e.preventDefault();
+      state.dragCounter = 0;
+      dom.dropOverlay.classList.add('hidden');
+      if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+        addFiles(Array.from(e.dataTransfer.files));
+      }
+    });
+
+    // Clipboard paste for images
+    dom.chatInput.addEventListener('paste', function (e) {
+      if (!e.clipboardData || !e.clipboardData.items) return;
+      var imageFiles = [];
+      for (var i = 0; i < e.clipboardData.items.length; i++) {
+        var item = e.clipboardData.items[i];
+        if (item.type.indexOf('image/') === 0) {
+          var file = item.getAsFile();
+          if (file) {
+            // Give pasted images a meaningful name
+            var ext = file.type.split('/')[1] || 'png';
+            var named = new File([file], 'clipboard-' + Date.now() + '.' + ext, { type: file.type });
+            imageFiles.push(named);
+          }
+        }
+      }
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        addFiles(imageFiles);
+      }
+      // If no images found, let the default paste (text) happen
+    });
+  }
+
+  function addFiles(files) {
+    var errors = [];
+
+    for (var i = 0; i < files.length; i++) {
+      var file = files[i];
+
+      // Check total count
+      if (state.pendingFiles.length >= CONFIG.maxFiles) {
+        errors.push('Maximum ' + CONFIG.maxFiles + ' files allowed');
+        break;
+      }
+
+      // Check size
+      if (file.size > CONFIG.maxFileSize) {
+        errors.push(file.name + ' exceeds ' + formatFileSize(CONFIG.maxFileSize) + ' limit');
+        continue;
+      }
+
+      // Check type
+      if (!isAllowedFile(file)) {
+        errors.push(file.name + ': unsupported file type');
+        continue;
+      }
+
+      // Check for duplicate filename
+      var isDuplicate = state.pendingFiles.some(function (f) { return f.name === file.name; });
+      if (isDuplicate) {
+        errors.push(file.name + ': already attached');
+        continue;
+      }
+
+      state.pendingFiles.push(file);
+    }
+
+    if (errors.length > 0) {
+      appendSystemMessage(errors.join('. '), 'error');
+    }
+
+    renderAttachmentPreview();
+    announceFiles();
+  }
+
+  function removeFile(index) {
+    var file = state.pendingFiles[index];
+    state.pendingFiles.splice(index, 1);
+    renderAttachmentPreview();
+    announceFiles();
+  }
+
+  function announceFiles() {
+    var count = state.pendingFiles.length;
+    if (count === 0) {
+      dom.fileAnnounce.textContent = 'All files removed';
+    } else {
+      dom.fileAnnounce.textContent = count + ' file' + (count !== 1 ? 's' : '') + ' attached';
+    }
+  }
+
+  function renderAttachmentPreview() {
+    var container = dom.attachmentPreview;
+    // Clear existing
+    while (container.firstChild) {
+      container.removeChild(container.firstChild);
+    }
+
+    if (state.pendingFiles.length === 0) {
+      container.classList.add('hidden');
+      return;
+    }
+
+    container.classList.remove('hidden');
+
+    for (var i = 0; i < state.pendingFiles.length; i++) {
+      (function (index) {
+        var file = state.pendingFiles[index];
+        var item = document.createElement('div');
+        item.className = 'attachment-item';
+        item.setAttribute('role', 'listitem');
+        item.setAttribute('aria-label', file.name + ', ' + formatFileSize(file.size));
+
+        if (file.type && file.type.indexOf('image/') === 0) {
+          var thumb = document.createElement('img');
+          thumb.className = 'attachment-thumb';
+          var url = URL.createObjectURL(file);
+          thumb.src = url;
+          thumb.alt = file.name;
+          thumb.onload = function () { URL.revokeObjectURL(url); };
+          item.appendChild(thumb);
+        } else {
+          var icon = document.createElement('span');
+          icon.className = 'attachment-icon';
+          icon.textContent = '\uD83D\uDCC4'; // file emoji as fallback
+          icon.setAttribute('aria-hidden', 'true');
+          item.appendChild(icon);
+        }
+
+        var nameSpan = document.createElement('span');
+        nameSpan.className = 'attachment-name';
+        nameSpan.textContent = file.name;
+        item.appendChild(nameSpan);
+
+        var sizeSpan = document.createElement('span');
+        sizeSpan.className = 'attachment-size';
+        sizeSpan.textContent = formatFileSize(file.size);
+        item.appendChild(sizeSpan);
+
+        var removeBtn = document.createElement('button');
+        removeBtn.className = 'attachment-remove';
+        removeBtn.setAttribute('aria-label', 'Remove ' + file.name);
+        removeBtn.textContent = '\u2715';
+        removeBtn.addEventListener('click', function () {
+          removeFile(index);
+        });
+        item.appendChild(removeBtn);
+
+        container.appendChild(item);
+      })(i);
+    }
+
+    // File count
+    var countEl = document.createElement('span');
+    countEl.className = 'attachment-count';
+    countEl.textContent = state.pendingFiles.length + '/' + CONFIG.maxFiles;
+    container.appendChild(countEl);
+  }
+
+  // --------------------------------------------------------
   // Notebook Controls
   // --------------------------------------------------------
 
@@ -1255,6 +1567,7 @@
     cacheDom();
     configureMarked();
     setupChatInput();
+    setupFileUpload();
     setupNotebookControls();
     setupDivider();
     connectWebSocket();

@@ -15,6 +15,7 @@ dependencies = [
     "jupyter_client>=8.0",
     "ipykernel>=6.0",
     "aiosqlite>=0.19.0",
+    "python-magic>=0.4.27",
 ]
 
 [project.optional-dependencies]
