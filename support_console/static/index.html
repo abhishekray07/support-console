@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Support Console</title>
+
+  <!-- highlight.js for syntax highlighting -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+
+  <!-- marked.js for markdown rendering -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
+
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <!-- Header -->
+  <header id="header">
+    <div class="header-left">
+      <h1>Support Console</h1>
+    </div>
+    <div class="header-right">
+      <span id="ws-status" class="status-badge status-disconnected" title="WebSocket status">
+        <span class="status-dot"></span>
+        <span class="status-label">Disconnected</span>
+      </span>
+      <span id="kernel-status" class="status-badge status-unknown" title="Kernel status">
+        <span class="status-dot"></span>
+        <span class="status-label">Kernel: Unknown</span>
+      </span>
+    </div>
+  </header>
+
+  <!-- Main content area -->
+  <main id="main">
+
+    <!-- Left Panel: Chat -->
+    <section id="chat-panel" class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Chat</span>
+      </div>
+
+      <div id="chat-messages" class="chat-messages">
+        <!-- Messages will be rendered here -->
+        <div class="chat-welcome">
+          <p>Welcome to Support Console. Type a message to begin.</p>
+        </div>
+      </div>
+
+      <!-- Streaming indicator -->
+      <div id="chat-streaming" class="chat-streaming hidden">
+        <div class="streaming-dots">
+          <span></span><span></span><span></span>
+        </div>
+        <span class="streaming-label">Assistant is responding...</span>
+      </div>
+
+      <div id="chat-input-area" class="chat-input-area">
+        <textarea
+          id="chat-input"
+          class="chat-input"
+          placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
+          rows="1"
+        ></textarea>
+        <button id="chat-send" class="btn btn-primary" title="Send message">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
+      </div>
+    </section>
+
+    <!-- Resizable divider -->
+    <div id="divider" class="divider" title="Drag to resize panels">
+      <div class="divider-handle"></div>
+    </div>
+
+    <!-- Right Panel: Notebook -->
+    <section id="notebook-panel" class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Notebook</span>
+        <button id="clear-notebook" class="btn btn-ghost btn-sm" title="Clear all cells">Clear All</button>
+      </div>
+
+      <div id="notebook-cells" class="notebook-cells">
+        <!-- Cells will be rendered here -->
+        <div class="notebook-empty">
+          <p>No cells yet. Send code from chat or add a new cell.</p>
+        </div>
+      </div>
+
+      <div class="notebook-footer">
+        <button id="add-cell" class="btn btn-secondary">
+          <span>+ New Cell</span>
+        </button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Reconnecting overlay -->
+  <div id="reconnecting-overlay" class="reconnecting-overlay hidden">
+    <div class="reconnecting-content">
+      <div class="spinner"></div>
+      <span>Reconnecting to server...</span>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
