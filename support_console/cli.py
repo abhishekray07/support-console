@@ -34,9 +34,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == "run":
-        import uvicorn
-        from support_console.server import create_app
-
+        # Validate startup script early, before heavy imports
         startup_code = None
         if args.startup_script:
             path = Path(args.startup_script).resolve()
@@ -53,6 +51,9 @@ def main():
                 sys.exit(1)
             logger.info("Loading startup script: %s", path)
             startup_code = DEFAULT_STARTUP.replace("{custom_startup}", custom_code)
+
+        import uvicorn
+        from support_console.server import create_app
 
         app = create_app(
             app_root=args.app_root,
