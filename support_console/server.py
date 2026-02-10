@@ -28,7 +28,7 @@ WS_RATE_LIMIT_MAX = 20            # max messages per window
 from support_console.chat import ChatEngine
 from support_console.kernel import KernelSession, KernelError, ExecutionTimeout
 from support_console.sessions import SessionStore
-from support_console.startup_template import DEFAULT_STARTUP, FLASK_STARTUP
+from support_console.startup_template import render_startup
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ def create_app(
         Defaults to all tools.
     """
     if startup_code is None:
-        startup_code = DEFAULT_STARTUP.format(custom_startup="")
+        startup_code = render_startup()
 
     state = AppState(
         app_root=app_root,
