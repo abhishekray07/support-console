@@ -179,3 +179,74 @@ class TestStaticFiles:
         resp = await client.get("/")
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
+
+
+class TestUploadEndpoint:
+    """Tests for the POST /api/upload endpoint."""
+
+    async def test_upload_single_text_file(self, client):
+        files = [("files", ("test.txt", b"hello world", "text/plain"))]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["files"]) == 1
+        assert data["files"][0]["name"] == "test.txt"
+        assert data["files"][0]["size"] == 11
+
+    async def test_upload_multiple_files(self, client):
+        files = [
+            ("files", ("a.txt", b"aaa", "text/plain")),
+            ("files", ("b.txt", b"bbb", "text/plain")),
+        ]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()["files"]) == 2
+
+    async def test_upload_rejects_without_csrf_header(self, client):
+        files = [("files", ("test.txt", b"hello", "text/plain"))]
+        resp = await client.post("/api/upload", files=files)
+        assert resp.status_code == 403
+
+    async def test_upload_rejects_disallowed_type(self, client):
+        files = [("files", ("evil.exe", b"MZ\x90\x00", "application/octet-stream"))]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 415
+
+    async def test_upload_rejects_oversized_file(self, client):
+        big_data = b"x" * (10 * 1024 * 1024 + 1)
+        files = [("files", ("big.txt", big_data, "text/plain"))]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 413
+
+    async def test_upload_rejects_too_many_files(self, client):
+        files = [("files", (f"f{i}.txt", b"x", "text/plain")) for i in range(6)]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 400
+
+    async def test_upload_rejects_no_files(self, client):
+        """FastAPI returns 422 when required File(...) field is missing."""
+        resp = await client.post(
+            "/api/upload",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 422
