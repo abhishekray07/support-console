@@ -273,3 +273,78 @@ class TestChatEngineInit:
                 app_root=sample_app_root,
                 allowed_tools=["Bash"],
             )
+
+
+import base64
+import time
+
+from support_console.chat import _build_user_content
+from support_console.file_store import FileEntry
+
+
+class TestBuildUserContent:
+    """Tests for building multi-part user content with file attachments."""
+
+    def test_text_only(self):
+        """Without files, returns plain string."""
+        result = _build_user_content("hello", files=None)
+        assert result == "hello"
+
+    def test_with_image(self):
+        """Image file produces image content block + text."""
+        img = FileEntry(
+            id="img1", name="shot.png", media_type="image/png",
+            data=b"\x89PNG\r\n", created_at=time.monotonic(), size=6,
+        )
+        result = _build_user_content("describe this", files=[img])
+        assert isinstance(result, list)
+        assert result[0]["type"] == "image"
+        assert result[0]["source"]["media_type"] == "image/png"
+        assert result[0]["source"]["data"] == base64.standard_b64encode(b"\x89PNG\r\n").decode()
+        # User text is last
+        assert result[-1]["type"] == "text"
+        assert result[-1]["text"] == "describe this"
+
+    def test_with_text_file(self):
+        """Text file produces text block with attached-file tags."""
+        txt = FileEntry(
+            id="txt1", name="app.log", media_type="text/plain",
+            data=b"ERROR: something broke\n", created_at=time.monotonic(), size=22,
+        )
+        result = _build_user_content("what happened?", files=[txt])
+        assert isinstance(result, list)
+        # First block is the text file
+        assert '<attached-file name="app.log">' in result[0]["text"]
+        assert "ERROR: something broke" in result[0]["text"]
+        assert "</attached-file>" in result[0]["text"]
+        # Last block is user message
+        assert result[-1]["text"] == "what happened?"
+
+    def test_mixed_files(self):
+        """Images come before text files, user message last."""
+        img = FileEntry(
+            id="img1", name="shot.png", media_type="image/png",
+            data=b"\x89PNG", created_at=time.monotonic(), size=4,
+        )
+        txt = FileEntry(
+            id="txt1", name="data.csv", media_type="text/csv",
+            data=b"a,b\n1,2\n", created_at=time.monotonic(), size=8,
+        )
+        result = _build_user_content("analyze", files=[txt, img])
+        # Image first
+        assert result[0]["type"] == "image"
+        # Text file second
+        assert result[1]["type"] == "text"
+        assert "data.csv" in result[1]["text"]
+        # User message last
+        assert result[-1]["text"] == "analyze"
+
+    def test_large_text_truncated(self):
+        """Text files over 500KB are truncated."""
+        big = FileEntry(
+            id="big1", name="huge.log", media_type="text/plain",
+            data=b"x" * (600 * 1024), created_at=time.monotonic(), size=600 * 1024,
+        )
+        result = _build_user_content("read this", files=[big])
+        text_block = result[0]["text"]
+        assert "truncated" in text_block.lower()
