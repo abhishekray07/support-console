@@ -249,16 +249,50 @@ def create_app(
 
                 user_message = data.get("message", "")
                 history = data.get("messages", [])
+                file_ids = data.get("file_ids", [])
 
                 if not user_message:
                     await ws.send_json({"type": "error", "error": "Empty message"})
                     continue
 
+                # Validate file_ids count
+                if len(file_ids) > UPLOAD_MAX_FILES:
+                    await ws.send_json({
+                        "type": "error",
+                        "error": f"Too many files (max {UPLOAD_MAX_FILES})",
+                    })
+                    continue
+
+                # Resolve file IDs — two-phase: get-all first, then pop-all
+                # This prevents partial consumption if any ID is missing/expired
+                resolved_files = []
+                if file_ids:
+                    # Phase 1: verify all IDs exist (non-destructive)
+                    all_valid = True
+                    for fid in file_ids:
+                        entry = app.state.console.file_store.get(fid)
+                        if entry is None:
+                            await ws.send_json({
+                                "type": "error",
+                                "error": "Attached files have expired. Please re-attach and resend.",
+                            })
+                            all_valid = False
+                            break
+
+                    if not all_valid:
+                        continue
+
+                    # Phase 2: all valid — now pop (consume) them
+                    for fid in file_ids:
+                        resolved_files.append(app.state.console.file_store.pop(fid))
+
                 # Build messages list from history + new message
                 messages = list(history)
                 messages.append({"role": "user", "content": user_message})
 
-                async for event in engine.chat_stream(messages):
+                async for event in engine.chat_stream(
+                    messages, files=resolved_files or None
+                ):
                     await ws.send_json(event)
 
                 # Send back the updated messages list so client can maintain history

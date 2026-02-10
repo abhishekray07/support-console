@@ -250,3 +250,37 @@ class TestUploadEndpoint:
             headers={"X-Requested-With": "XMLHttpRequest"},
         )
         assert resp.status_code == 422
+
+
+class TestFileIdResolution:
+    """Tests for file ID resolution in the WebSocket handler path."""
+
+    async def test_file_store_integration(self, app_with_client):
+        """File store on AppState can store and pop entries."""
+        app, client = app_with_client
+        store = app.state.console.file_store
+
+        entry = store.add(name="test.txt", media_type="text/plain", data=b"hello")
+        assert store.get(entry.id) is not None
+
+        popped = store.pop(entry.id)
+        assert popped.name == "test.txt"
+        assert store.get(entry.id) is None
+
+    async def test_upload_then_retrieve(self, app_with_client):
+        """Upload a file, then verify it's in the file store."""
+        app, client = app_with_client
+
+        files = [("files", ("test.txt", b"hello", "text/plain"))]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 200
+        file_id = resp.json()["files"][0]["id"]
+
+        # Verify it's in the store
+        entry = app.state.console.file_store.get(file_id)
+        assert entry is not None
+        assert entry.data == b"hello"
