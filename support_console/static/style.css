@@ -247,8 +247,11 @@ html, body {
 }
 
 .divider:hover,
-.divider.dragging {
+.divider.dragging,
+.divider:focus-visible {
   background: var(--accent-blue);
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
 }
 
 .divider-handle {
@@ -265,7 +268,8 @@ html, body {
 }
 
 .divider:hover .divider-handle,
-.divider.dragging .divider-handle {
+.divider.dragging .divider-handle,
+.divider:focus-visible .divider-handle {
   opacity: 1;
   background: #fff;
 }
@@ -678,6 +682,11 @@ html, body {
   background: var(--bg-active);
 }
 
+.btn:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 1px;
+}
+
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -875,6 +884,11 @@ html, body {
 .cell-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+.cell-btn:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
 }
 
 .cell-btn-run {

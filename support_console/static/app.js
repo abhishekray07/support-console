@@ -454,14 +454,45 @@
     var wrapper = document.querySelector('[data-code-id="' + id + '"]');
     if (!wrapper) return;
     var code = wrapper.dataset.code;
-    navigator.clipboard.writeText(code).then(function () {
-      var btn = wrapper.querySelector('[data-copy-id]');
+    var btn = wrapper.querySelector('[data-copy-id]');
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(code).then(function () {
+        if (btn) {
+          var orig = btn.textContent;
+          btn.textContent = 'Copied!';
+          setTimeout(function () { btn.textContent = orig; }, 1500);
+        }
+      }).catch(function () {
+        fallbackCopy(code, btn);
+      });
+    } else {
+      fallbackCopy(code, btn);
+    }
+  }
+
+  function fallbackCopy(text, btn) {
+    var textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand('copy');
       if (btn) {
         var orig = btn.textContent;
         btn.textContent = 'Copied!';
         setTimeout(function () { btn.textContent = orig; }, 1500);
       }
-    });
+    } catch (_) {
+      if (btn) {
+        var origText = btn.textContent;
+        btn.textContent = 'Failed';
+        setTimeout(function () { btn.textContent = origText; }, 1500);
+      }
+    }
+    document.body.removeChild(textarea);
   }
 
   function handleSendToNotebook(id) {
@@ -624,9 +655,23 @@
 
     el.appendChild(body);
 
+    // Make header keyboard-accessible
+    header.setAttribute('role', 'button');
+    header.setAttribute('tabindex', '0');
+    header.setAttribute('aria-expanded', 'false');
+
     // Toggle expand/collapse
-    header.addEventListener('click', function () {
-      el.classList.toggle('expanded');
+    function toggleExpand() {
+      var expanded = el.classList.toggle('expanded');
+      header.setAttribute('aria-expanded', String(expanded));
+    }
+
+    header.addEventListener('click', toggleExpand);
+    header.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        toggleExpand();
+      }
     });
 
     return el;
@@ -690,6 +735,8 @@
     el.className = 'cell cell-idle';
     el.id = 'cell-' + cellData.id;
     el.dataset.cellId = cellData.id;
+    el.setAttribute('role', 'listitem');
+    el.setAttribute('aria-label', 'Cell ' + cellData.number);
 
     // Cell header
     var header = document.createElement('div');
@@ -739,6 +786,7 @@
     var textarea = document.createElement('textarea');
     textarea.placeholder = '# Enter code here...';
     textarea.spellcheck = false;
+    textarea.setAttribute('aria-label', 'Code for cell ' + cellData.number);
     textarea.value = cellData.code;
     editor.appendChild(textarea);
     el.appendChild(editor);
@@ -1119,6 +1167,25 @@
     divider.addEventListener('mousedown', onMouseDown);
 
     // Touch support
+    // Keyboard support for divider
+    divider.addEventListener('keydown', function (e) {
+      var step = 40;
+      var totalWidth = main.getBoundingClientRect().width - divider.getBoundingClientRect().width;
+      var chatWidth = chatPanel.getBoundingClientRect().width;
+      var minPanel = 280;
+      var newChatWidth;
+
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        newChatWidth = chatWidth + (e.key === 'ArrowRight' ? step : -step);
+        if (newChatWidth < minPanel || (totalWidth - newChatWidth) < minPanel) return;
+        var chatPct = (newChatWidth / totalWidth) * 100;
+        var notebookPct = 100 - chatPct;
+        chatPanel.style.flex = '0 0 ' + chatPct + '%';
+        notebookPanel.style.flex = '0 0 ' + notebookPct + '%';
+      }
+    });
+
     divider.addEventListener('touchstart', function (e) {
       var touch = e.touches[0];
       onMouseDown({ preventDefault: function () {}, clientX: touch.clientX });

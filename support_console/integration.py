@@ -15,7 +15,6 @@ Usage (as Flask blueprint -- future)::
     console.init_app(app, url_prefix="/support-console")
 """
 
-import inspect
 import logging
 from typing import Any
 
@@ -110,6 +109,7 @@ class SupportConsole:
             api_key=self._config.get("anthropic_api_key"),
             system_prompt=self._config.get("system_prompt"),
             startup_code=self._config.get("startup_code", self._startup_code),
+            allowed_tools=self._config.get("allowed_tools"),
         )
 
         logger.info("Starting Support Console on %s:%d", host, port)

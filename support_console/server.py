@@ -10,6 +10,7 @@ Provides:
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -18,6 +19,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+# WebSocket safety limits
+WS_MAX_MESSAGE_SIZE = 1024 * 1024  # 1 MB max per message
+WS_RATE_LIMIT_WINDOW = 5.0        # seconds
+WS_RATE_LIMIT_MAX = 20            # max messages per window
 
 from support_console.chat import ChatEngine
 from support_console.kernel import KernelSession, KernelError, ExecutionTimeout
@@ -36,6 +42,11 @@ STATIC_DIR = Path(__file__).parent / "static"
 class ExecuteRequest(BaseModel):
     code: str
     timeout: float = 30.0
+
+    @property
+    def clamped_timeout(self) -> float:
+        """Return timeout clamped to a safe range (1-300 seconds)."""
+        return max(1.0, min(self.timeout, 300.0))
 
 
 class SessionCreateRequest(BaseModel):
@@ -64,12 +75,14 @@ class AppState:
         api_key: str | None,
         system_prompt: str | None,
         startup_code: str,
+        allowed_tools: list[str] | None = None,
     ):
         self.app_root = app_root
         self.session_db = session_db
         self.api_key = api_key
         self.system_prompt = system_prompt
         self.startup_code = startup_code
+        self.allowed_tools = allowed_tools
 
         self.kernel: Optional[KernelSession] = None
         self.sessions: Optional[SessionStore] = None
@@ -82,6 +95,7 @@ def create_app(
     api_key: str | None = None,
     system_prompt: str | None = None,
     startup_code: str | None = None,
+    allowed_tools: list[str] | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -98,6 +112,10 @@ def create_app(
     startup_code:
         Python code to run in the IPython kernel on startup.
         Defaults to a basic "Support Console ready" message.
+    allowed_tools:
+        Optional list of tools Claude can use.  Accepts spec names
+        ("Read", "Grep", "Glob") or internal names ("read_file", etc.).
+        Defaults to all tools.
     """
     if startup_code is None:
         startup_code = DEFAULT_STARTUP.format(custom_startup="")
@@ -108,6 +126,7 @@ def create_app(
         api_key=api_key,
         system_prompt=system_prompt,
         startup_code=startup_code,
+        allowed_tools=allowed_tools,
     )
 
     @asynccontextmanager
@@ -125,6 +144,7 @@ def create_app(
                 api_key=state.api_key,
                 app_root=state.app_root,
                 system_prompt=state.system_prompt,
+                allowed_tools=state.allowed_tools,
             )
         except ValueError as exc:
             logger.warning("Chat engine not available: %s", exc)
@@ -175,9 +195,32 @@ def create_app(
             await ws.close()
             return
 
+        # Simple rate limiter state for this connection
+        msg_timestamps: list[float] = []
+
         try:
             while True:
-                data = await ws.receive_json()
+                raw = await ws.receive_text()
+
+                # Guard: message size
+                if len(raw) > WS_MAX_MESSAGE_SIZE:
+                    await ws.send_json({"type": "error", "error": "Message too large (max 1 MB)"})
+                    continue
+
+                # Guard: rate limit
+                now = time.monotonic()
+                msg_timestamps = [t for t in msg_timestamps if now - t < WS_RATE_LIMIT_WINDOW]
+                msg_timestamps.append(now)
+                if len(msg_timestamps) > WS_RATE_LIMIT_MAX:
+                    await ws.send_json({"type": "error", "error": "Rate limit exceeded. Please slow down."})
+                    continue
+
+                try:
+                    data = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    await ws.send_json({"type": "error", "error": "Invalid JSON"})
+                    continue
+
                 user_message = data.get("message", "")
                 history = data.get("messages", [])
 
@@ -204,6 +247,7 @@ def create_app(
             logger.exception("Chat WebSocket error")
             try:
                 await ws.send_json({"type": "error", "error": str(exc)})
+                await ws.close(code=1011)
             except Exception:
                 pass
 
@@ -219,7 +263,7 @@ def create_app(
             raise HTTPException(status_code=503, detail="Kernel not available")
 
         try:
-            result = await kernel.execute(req.code, timeout=req.timeout)
+            result = await kernel.execute(req.code, timeout=req.clamped_timeout)
             return result
         except ExecutionTimeout:
             raise HTTPException(status_code=408, detail="Execution timed out")

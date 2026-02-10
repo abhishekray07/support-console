@@ -7,6 +7,7 @@ Provides a ChatEngine that wraps the Anthropic messages API with:
 - Path sandboxing to prevent reading files outside the app root
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -30,7 +31,18 @@ MAX_TOKENS = 4096                   # max tokens per Claude response
 # ---------------------------------------------------------------------------
 # Tool definitions sent to the Anthropic API
 # ---------------------------------------------------------------------------
-TOOLS = [
+# Mapping from user-facing config names to internal tool names.
+# Supports both spec names ("Read", "Grep", "Glob") and internal names.
+_TOOL_NAME_ALIASES: dict[str, str] = {
+    "Read": "read_file",
+    "Grep": "grep",
+    "Glob": "glob_search",
+    "read_file": "read_file",
+    "grep": "grep",
+    "glob_search": "glob_search",
+}
+
+ALL_TOOLS = [
     {
         "name": "read_file",
         "description": (
@@ -218,6 +230,9 @@ def _tool_grep(pattern: str, path: str, include: str | None, app_root: str) -> s
         files = [resolved]
     else:
         glob_pat = include or "*"
+        # Reject glob patterns that could escape the sandbox
+        if ".." in glob_pat or glob_pat.startswith("/"):
+            return "Error: invalid include pattern (must not contain '..' or start with '/')"
         files = sorted(resolved.rglob(glob_pat))
 
     matches: list[str] = []
@@ -263,6 +278,10 @@ def _tool_glob_search(pattern: str, path: str, app_root: str) -> str:
         return f"Error: path not found: {resolved}"
     if not resolved.is_dir():
         return f"Error: not a directory: {resolved}"
+
+    # Reject glob patterns that could escape the sandbox
+    if ".." in pattern or pattern.startswith("/"):
+        return "Error: invalid glob pattern (must not contain '..' or start with '/')"
 
     results = sorted(resolved.glob(pattern))
     file_results = [p for p in results if p.is_file()]
@@ -350,6 +369,7 @@ class ChatEngine:
         app_root: str = "/app/server",
         system_prompt: str | None = None,
         model: str = "claude-sonnet-4-5-20250929",
+        allowed_tools: list[str] | None = None,
     ):
         resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not resolved_key:
@@ -360,6 +380,21 @@ class ChatEngine:
         self._client = anthropic.AsyncAnthropic(api_key=resolved_key)
         self._app_root = str(Path(app_root).resolve())
         self._model = model
+
+        # Filter tools based on allowed_tools config
+        if allowed_tools is not None:
+            internal_names = set()
+            for name in allowed_tools:
+                internal = _TOOL_NAME_ALIASES.get(name)
+                if internal is None:
+                    raise ValueError(
+                        f"Unknown tool {name!r}. Valid tools: "
+                        f"{sorted(_TOOL_NAME_ALIASES.keys())}"
+                    )
+                internal_names.add(internal)
+            self._tools = [t for t in ALL_TOOLS if t["name"] in internal_names]
+        else:
+            self._tools = list(ALL_TOOLS)
 
         template = system_prompt or DEFAULT_SYSTEM_PROMPT
         self._system_prompt = template.format(app_root=self._app_root)
@@ -439,7 +474,7 @@ class ChatEngine:
                     model=self._model,
                     max_tokens=MAX_TOKENS,
                     system=self._system_prompt,
-                    tools=TOOLS,
+                    tools=self._tools,
                     messages=messages,
                 ) as stream:
                     async for event in stream:
@@ -516,8 +551,8 @@ class ChatEngine:
                     "input": tool_call["input"],
                 }
 
-                result = self._execute_tool(
-                    tool_call["name"], tool_call["input"]
+                result = await asyncio.to_thread(
+                    self._execute_tool, tool_call["name"], tool_call["input"]
                 )
 
                 yield {
@@ -529,7 +564,7 @@ class ChatEngine:
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_call["id"],
-                    "content": result,
+                    "content": _truncate(result),
                 })
 
             # Append tool results as a user message and continue loop

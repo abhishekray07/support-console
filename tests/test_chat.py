@@ -120,6 +120,43 @@ class TestToolGlobSearch:
         with pytest.raises(ValueError, match="Access denied"):
             _tool_glob_search("*", "/etc", sample_app_root)
 
+    def test_glob_dotdot_pattern_rejected(self, sample_app_root):
+        """Glob patterns containing '..' are rejected."""
+        result = _tool_glob_search("../../etc/*", sample_app_root, sample_app_root)
+        assert "invalid glob pattern" in result.lower()
+
+    def test_glob_absolute_pattern_rejected(self, sample_app_root):
+        """Glob patterns starting with '/' are rejected."""
+        result = _tool_glob_search("/etc/passwd", sample_app_root, sample_app_root)
+        assert "invalid glob pattern" in result.lower()
+
+
+class TestGrepIncludePatternValidation:
+    """Tests for grep include pattern validation."""
+
+    def test_grep_dotdot_include_rejected(self, sample_app_root):
+        """Grep include patterns containing '..' are rejected."""
+        result = _tool_grep("test", sample_app_root, "../../etc/*", sample_app_root)
+        assert "invalid include pattern" in result.lower()
+
+    def test_grep_absolute_include_rejected(self, sample_app_root):
+        """Grep include patterns starting with '/' are rejected."""
+        result = _tool_grep("test", sample_app_root, "/etc/passwd", sample_app_root)
+        assert "invalid include pattern" in result.lower()
+
+
+class TestSymlinkSandboxing:
+    """Tests for symlink-based sandbox escapes."""
+
+    def test_symlink_escape_blocked(self, sample_app_root):
+        """Symlinks pointing outside the sandbox are caught by resolve()."""
+        import os
+        symlink_path = os.path.join(sample_app_root, "evil_link")
+        os.symlink("/etc/passwd", symlink_path)
+
+        with pytest.raises(ValueError, match="Access denied"):
+            _tool_read_file(symlink_path, sample_app_root)
+
 
 class TestExtractCodeBlocks:
     """Tests for code block extraction."""
@@ -197,3 +234,42 @@ class TestChatEngineInit:
             system_prompt="Custom prompt for {app_root}",
         )
         assert sample_app_root in engine._system_prompt
+
+    def test_allowed_tools_spec_names(self, sample_app_root):
+        """ChatEngine filters tools using spec-style names (Read, Grep, Glob)."""
+        engine = ChatEngine(
+            api_key="sk-test-key",
+            app_root=sample_app_root,
+            allowed_tools=["Read", "Grep"],
+        )
+        tool_names = [t["name"] for t in engine._tools]
+        assert "read_file" in tool_names
+        assert "grep" in tool_names
+        assert "glob_search" not in tool_names
+
+    def test_allowed_tools_internal_names(self, sample_app_root):
+        """ChatEngine filters tools using internal names."""
+        engine = ChatEngine(
+            api_key="sk-test-key",
+            app_root=sample_app_root,
+            allowed_tools=["read_file"],
+        )
+        tool_names = [t["name"] for t in engine._tools]
+        assert tool_names == ["read_file"]
+
+    def test_allowed_tools_all(self, sample_app_root):
+        """ChatEngine includes all tools when allowed_tools is None."""
+        engine = ChatEngine(
+            api_key="sk-test-key",
+            app_root=sample_app_root,
+        )
+        assert len(engine._tools) == 3
+
+    def test_allowed_tools_invalid_name(self, sample_app_root):
+        """ChatEngine raises ValueError for unknown tool names."""
+        with pytest.raises(ValueError, match="Unknown tool"):
+            ChatEngine(
+                api_key="sk-test-key",
+                app_root=sample_app_root,
+                allowed_tools=["Bash"],
+            )
