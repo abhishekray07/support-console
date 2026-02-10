@@ -9,6 +9,7 @@ Provides a ChatEngine that wraps the Anthropic messages API with:
 
 import asyncio
 import base64
+import html
 import logging
 import os
 import re
@@ -385,10 +386,13 @@ def _build_user_content(
     # Text files — wrapped in structured delimiters
     for tf in text_files:
         content = tf.data.replace(b"\x00", b"").decode("utf-8", errors="replace")
+        # Escape closing tags to prevent content from breaking out of the wrapper
+        content = content.replace("</attached-file>", "&lt;/attached-file&gt;")
         content = _truncate(content, max_len=500 * 1024)
+        safe_name = html.escape(tf.name, quote=True)
         blocks.append({
             "type": "text",
-            "text": f'<attached-file name="{tf.name}">\n{content}\n</attached-file>',
+            "text": f'<attached-file name="{safe_name}">\n{content}\n</attached-file>',
         })
 
     # User message last

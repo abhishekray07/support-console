@@ -251,6 +251,33 @@ class TestUploadEndpoint:
         )
         assert resp.status_code == 422
 
+    async def test_upload_rate_limit(self, client):
+        """Exceeding upload rate limit returns 429."""
+        headers = {"X-Requested-With": "XMLHttpRequest"}
+        for i in range(10):
+            files = [("files", (f"f{i}.txt", b"x", "text/plain"))]
+            resp = await client.post("/api/upload", files=files, headers=headers)
+            assert resp.status_code == 200
+
+        # 11th request should be rate-limited
+        files = [("files", ("extra.txt", b"x", "text/plain"))]
+        resp = await client.post("/api/upload", files=files, headers=headers)
+        assert resp.status_code == 429
+
+    async def test_upload_memory_cap(self, app_with_client):
+        """Exceeding file store memory cap returns 507."""
+        app, client = app_with_client
+        # Set a tiny cap so we can trigger it easily
+        app.state.console.file_store._max_total_bytes = 100
+
+        files = [("files", ("big.txt", b"x" * 200, "text/plain"))]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 507
+
 
 class TestFileIdResolution:
     """Tests for file ID resolution in the WebSocket handler path."""
@@ -266,6 +293,25 @@ class TestFileIdResolution:
         popped = store.pop(entry.id)
         assert popped.name == "test.txt"
         assert store.get(entry.id) is None
+
+    async def test_duplicate_file_ids_deduplicated(self, app_with_client):
+        """Duplicate file IDs are deduplicated before resolution."""
+        app, client = app_with_client
+        store = app.state.console.file_store
+
+        entry = store.add(name="test.txt", media_type="text/plain", data=b"hello")
+        file_id = entry.id
+
+        # Simulate what WS handler does with deduplication
+        file_ids = [file_id, file_id]
+        file_ids = list(dict.fromkeys(file_ids))  # dedup
+        assert len(file_ids) == 1
+
+        # Pop should succeed exactly once
+        popped = store.pop(file_ids[0])
+        assert popped is not None
+        assert popped.name == "test.txt"
+        assert store.get(file_id) is None
 
     async def test_upload_then_retrieve(self, app_with_client):
         """Upload a file, then verify it's in the file store."""

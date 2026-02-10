@@ -30,10 +30,22 @@ UPLOAD_MAX_FILES = 5
 UPLOAD_RATE_LIMIT_WINDOW = 60.0  # 1 minute
 UPLOAD_RATE_LIMIT_MAX = 10       # max uploads per window
 
+# Static extension→MIME mapping for text files (don't trust client Content-Type)
+_TEXT_MIME_MAP: dict[str, str] = {
+    ".txt": "text/plain", ".log": "text/plain", ".csv": "text/csv",
+    ".json": "application/json", ".xml": "application/xml", ".yaml": "text/yaml",
+    ".py": "text/x-python", ".js": "text/javascript", ".ts": "text/typescript",
+    ".html": "text/html", ".css": "text/css", ".md": "text/markdown",
+    ".sh": "text/x-shellscript", ".sql": "text/x-sql",
+    ".toml": "text/plain", ".ini": "text/plain", ".cfg": "text/plain",
+    ".conf": "text/plain",
+}
+
 from support_console.chat import ChatEngine
 from support_console.file_store import (
     FileStore, sanitize_filename, validate_file, detect_media_type,
     ValidationError, MAX_FILE_SIZE, ALLOWED_IMAGE_EXTENSIONS,
+    ALLOWED_TEXT_EXTENSIONS,
 )
 from support_console.kernel import KernelSession, KernelError, ExecutionTimeout
 from support_console.sessions import SessionStore
@@ -173,6 +185,14 @@ def create_app(
             while True:
                 await asyncio.sleep(60)
                 state.file_store.cleanup_expired()
+                # Prune stale IPs from upload rate limiter
+                now = time.monotonic()
+                stale = [
+                    ip for ip, ts in state._upload_rate.items()
+                    if not ts or now - ts[-1] > UPLOAD_RATE_LIMIT_WINDOW
+                ]
+                for ip in stale:
+                    del state._upload_rate[ip]
 
         state._cleanup_task = asyncio.create_task(_cleanup_loop())
 
@@ -264,9 +284,14 @@ def create_app(
                     continue
 
                 # Resolve file IDs — two-phase: get-all first, then pop-all
-                # This prevents partial consumption if any ID is missing/expired
+                # This prevents partial consumption if any ID is missing/expired.
+                # SAFETY: no `await` between phase 1 and phase 2, so the cleanup
+                # background task cannot run between them (single-threaded asyncio).
                 resolved_files = []
                 if file_ids:
+                    # Deduplicate while preserving order
+                    file_ids = list(dict.fromkeys(file_ids))
+
                     # Phase 1: verify all IDs exist (non-destructive)
                     all_valid = True
                     for fid in file_ids:
@@ -350,12 +375,12 @@ def create_app(
                 status = 413 if "exceeds" in str(exc) else 415
                 raise HTTPException(status_code=status, detail=str(exc))
 
-            # Use magic-detected media type for images (don't trust client Content-Type)
+            # Determine media type server-side (don't trust client Content-Type)
             _, ext = os.path.splitext(name.lower())
             if ext in ALLOWED_IMAGE_EXTENSIONS:
                 media_type = detect_media_type(data)
             else:
-                media_type = upload.content_type or "application/octet-stream"
+                media_type = _TEXT_MIME_MAP.get(ext, "application/octet-stream")
 
             try:
                 entry = state.file_store.add(

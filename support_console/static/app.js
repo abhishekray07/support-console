@@ -1307,6 +1307,13 @@
         continue;
       }
 
+      // Check for duplicate filename
+      var isDuplicate = state.pendingFiles.some(function (f) { return f.name === file.name; });
+      if (isDuplicate) {
+        errors.push(file.name + ': already attached');
+        continue;
+      }
+
       state.pendingFiles.push(file);
     }
 
