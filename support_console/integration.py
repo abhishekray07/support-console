@@ -84,7 +84,7 @@ class SupportConsole:
             models_module=models_module,
         )
 
-        return DEFAULT_STARTUP.format(custom_startup=flask_startup)
+        return DEFAULT_STARTUP.replace("{custom_startup}", flask_startup)
 
     def run(self, host: str = "0.0.0.0", port: int = 8888, **kwargs) -> None:
         """Start the support console server in standalone mode.

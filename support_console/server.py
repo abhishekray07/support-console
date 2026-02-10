@@ -118,7 +118,7 @@ def create_app(
         Defaults to all tools.
     """
     if startup_code is None:
-        startup_code = DEFAULT_STARTUP.format(custom_startup="")
+        startup_code = DEFAULT_STARTUP.replace("{custom_startup}", "")
 
     state = AppState(
         app_root=app_root,
