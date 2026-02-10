@@ -3,7 +3,7 @@
 import pytest
 
 from support_console.integration import SupportConsole
-from support_console.startup_template import DEFAULT_STARTUP, FLASK_STARTUP
+from support_console.startup_template import DEFAULT_STARTUP, FLASK_STARTUP, render_startup
 
 
 class TestSupportConsole:
@@ -72,12 +72,18 @@ class TestSupportConsole:
 class TestStartupTemplate:
     """Tests for startup template rendering."""
 
-    def test_default_startup_renders_with_braces(self):
-        """DEFAULT_STARTUP template handles code containing braces."""
+    def test_render_startup_with_braces(self):
+        """render_startup handles code containing braces."""
         code = 'd = {"key": "value"}\nprint(d)'
-        result = DEFAULT_STARTUP.replace("{custom_startup}", code)
+        result = render_startup(code)
         assert 'd = {"key": "value"}' in result
         assert "Support Console" in result
+
+    def test_render_startup_empty(self):
+        """render_startup with no args produces the default template."""
+        result = render_startup()
+        assert "Initializing Support Console kernel..." in result
+        assert "Support Console ready." in result
 
     def test_flask_startup_renders(self):
         """FLASK_STARTUP template renders with all variables."""

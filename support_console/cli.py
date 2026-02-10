@@ -5,9 +5,47 @@ import logging
 import sys
 from pathlib import Path
 
-from support_console.startup_template import DEFAULT_STARTUP
+from support_console.startup_template import render_startup
 
 logger = logging.getLogger(__name__)
+
+# Startup scripts beyond this size are almost certainly not hand-written
+# configuration code.  The limit prevents accidentally passing large files
+# (data dumps, serialized models) that would bloat kernel memory.
+MAX_STARTUP_SCRIPT_SIZE = 1_048_576  # 1 MB
+
+
+def _read_startup_script(raw_path: str) -> str:
+    """Read and validate a startup script, returning wrapped startup code.
+
+    Performs a single filesystem read inside a try/except to avoid TOCTOU
+    races between existence/size checks and the actual read.
+    """
+    path = Path(raw_path).resolve()
+    try:
+        content = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        print(f"Error: startup script not found: {path}", file=sys.stderr)
+        sys.exit(1)
+    except IsADirectoryError:
+        print(f"Error: startup script is a directory: {path}", file=sys.stderr)
+        sys.exit(1)
+    except PermissionError:
+        print(f"Error: cannot read startup script (permission denied): {path}", file=sys.stderr)
+        sys.exit(1)
+    except UnicodeDecodeError as exc:
+        print(f"Error: cannot read startup script (not valid UTF-8): {exc}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as exc:
+        print(f"Error: cannot read startup script: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if len(content.encode("utf-8")) > MAX_STARTUP_SCRIPT_SIZE:
+        print(f"Error: startup script too large (>1MB): {path}", file=sys.stderr)
+        sys.exit(1)
+
+    logger.info("Loading startup script: %s", path)
+    return render_startup(content)
 
 
 def main():
@@ -28,7 +66,7 @@ def main():
         "--startup-script",
         type=str,
         default=None,
-        help="Path to a Python script to run when the kernel starts",
+        help="Path to a .py file executed in the IPython kernel at boot (e.g. Flask app_context setup)",
     )
 
     args = parser.parse_args()
@@ -37,20 +75,7 @@ def main():
         # Validate startup script early, before heavy imports
         startup_code = None
         if args.startup_script:
-            path = Path(args.startup_script).resolve()
-            if not path.is_file():
-                print(f"Error: startup script not found: {path}", file=sys.stderr)
-                sys.exit(1)
-            if path.stat().st_size > 1_048_576:
-                print(f"Error: startup script too large (>1MB): {path}", file=sys.stderr)
-                sys.exit(1)
-            try:
-                custom_code = path.read_text(encoding="utf-8")
-            except (PermissionError, UnicodeDecodeError) as exc:
-                print(f"Error: cannot read startup script: {exc}", file=sys.stderr)
-                sys.exit(1)
-            logger.info("Loading startup script: %s", path)
-            startup_code = DEFAULT_STARTUP.replace("{custom_startup}", custom_code)
+            startup_code = _read_startup_script(args.startup_script)
 
         import uvicorn
         from support_console.server import create_app
