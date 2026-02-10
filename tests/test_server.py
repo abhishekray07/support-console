@@ -284,3 +284,46 @@ class TestFileIdResolution:
         entry = app.state.console.file_store.get(file_id)
         assert entry is not None
         assert entry.data == b"hello"
+
+
+class TestUploadAndChatIntegration:
+    """Integration test: upload files, then verify they are in the store."""
+
+    async def test_full_upload_flow(self, app_with_client):
+        """Upload files via HTTP, verify store, then pop (simulating WS handler)."""
+        app, client = app_with_client
+        store = app.state.console.file_store
+
+        # Upload
+        files = [
+            ("files", ("readme.md", b"# Hello\n", "text/markdown")),
+            ("files", ("data.csv", b"a,b\n1,2\n", "text/csv")),
+        ]
+        resp = await client.post(
+            "/api/upload",
+            files=files,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert resp.status_code == 200
+        uploaded = resp.json()["files"]
+        assert len(uploaded) == 2
+
+        # Verify both are in store
+        for f in uploaded:
+            assert store.get(f["id"]) is not None
+
+        # Simulate WS handler: pop files
+        resolved = []
+        for f in uploaded:
+            entry = store.pop(f["id"])
+            assert entry is not None
+            resolved.append(entry)
+
+        assert len(resolved) == 2
+        assert resolved[0].name == "readme.md"
+        assert resolved[1].name == "data.csv"
+
+        # Verify they're gone from store
+        for f in uploaded:
+            assert store.get(f["id"]) is None
+        assert store.total_bytes == 0
