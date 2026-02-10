@@ -357,9 +357,8 @@
     state.isStreaming = false;
     state.currentAssistantEl = null;
     state.currentAssistantContent = '';
-    dom.chatStreaming.classList.add('hidden');
-    dom.chatInput.disabled = false;
-    dom.chatSend.disabled = false;
+    hideStreamingStatus();
+    setInputsDisabled(false);
     dom.chatInput.focus();
   }
 
@@ -373,9 +372,8 @@
     state.isStreaming = false;
     state.currentAssistantEl = null;
     state.currentAssistantContent = '';
-    dom.chatStreaming.classList.add('hidden');
-    dom.chatInput.disabled = false;
-    dom.chatSend.disabled = false;
+    hideStreamingStatus();
+    setInputsDisabled(false);
 
     appendSystemMessage('Error: ' + (data.error || 'Unknown error'), 'error');
     autoScrollChat();
@@ -390,21 +388,37 @@
     if (welcome) welcome.remove();
   }
 
-  function createUserMessage(text) {
+  function createUserMessage(text, attachments) {
     clearWelcome();
-    const el = document.createElement('div');
+    var el = document.createElement('div');
     el.className = 'message message-user';
 
-    const roleEl = document.createElement('div');
+    var roleEl = document.createElement('div');
     roleEl.className = 'message-role';
     roleEl.textContent = 'You';
 
-    const contentEl = document.createElement('div');
+    var contentEl = document.createElement('div');
     contentEl.className = 'message-content';
-    contentEl.textContent = text;
+    if (text) {
+      contentEl.textContent = text;
+    }
 
     el.appendChild(roleEl);
     el.appendChild(contentEl);
+
+    // Attachment chips
+    if (attachments && attachments.length > 0) {
+      var chipsEl = document.createElement('div');
+      chipsEl.className = 'message-attachments';
+      for (var i = 0; i < attachments.length; i++) {
+        var chip = document.createElement('span');
+        chip.className = 'attachment-chip';
+        chip.textContent = attachments[i].name + ' (' + formatFileSize(attachments[i].size) + ')';
+        chipsEl.appendChild(chip);
+      }
+      el.appendChild(chipsEl);
+    }
+
     dom.chatMessages.appendChild(el);
     autoScrollChat();
     return el;
@@ -580,27 +594,76 @@
     }
   }
 
-  function sendMessage() {
-    const text = dom.chatInput.value.trim();
-    if (!text || state.isStreaming) return;
+  async function sendMessage() {
+    var text = dom.chatInput.value.trim();
+    if ((!text && state.pendingFiles.length === 0) || state.isStreaming || state.isUploading) return;
 
     if (!state.wsConnected) {
       appendSystemMessage('Not connected to server. Please wait for reconnection.', 'error');
       return;
     }
 
-    // Show user message
-    createUserMessage(text);
+    // Show user message with attachment info
+    var attachmentMeta = state.pendingFiles.map(function (f) {
+      return { name: f.name, size: f.size, type: f.type };
+    });
+    createUserMessage(text, attachmentMeta.length > 0 ? attachmentMeta : null);
 
-    // Send to server
-    const payload = {
-      message: text,
+    var fileIds = [];
+
+    // Upload files if any
+    if (state.pendingFiles.length > 0) {
+      state.isUploading = true;
+      setInputsDisabled(true);
+      showStreamingStatus('Uploading files...');
+
+      try {
+        var formData = new FormData();
+        for (var i = 0; i < state.pendingFiles.length; i++) {
+          formData.append('files', state.pendingFiles[i]);
+        }
+
+        var resp = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          body: formData,
+        });
+
+        if (!resp.ok) {
+          var err = await resp.json().catch(function () { return { detail: 'Upload failed' }; });
+          throw new Error(err.detail || 'Upload failed (' + resp.status + ')');
+        }
+
+        var result = await resp.json();
+        fileIds = result.files.map(function (f) { return f.id; });
+      } catch (e) {
+        state.isUploading = false;
+        setInputsDisabled(false);
+        hideStreamingStatus();
+        appendSystemMessage('Upload failed: ' + e.message, 'error');
+        return; // Keep files for retry
+      }
+
+      // Clear pending files on success
+      state.pendingFiles = [];
+      renderAttachmentPreview();
+      state.isUploading = false;
+    }
+
+    // Send to server via WebSocket
+    var payload = {
+      message: text || '(see attached files)',
       messages: state.messages,
     };
+    if (fileIds.length > 0) {
+      payload.file_ids = fileIds;
+    }
 
     try {
       state.ws.send(JSON.stringify(payload));
     } catch (e) {
+      setInputsDisabled(false);
+      hideStreamingStatus();
       appendSystemMessage('Failed to send message: ' + e.message, 'error');
       return;
     }
@@ -609,8 +672,24 @@
     state.isStreaming = true;
     dom.chatInput.value = '';
     dom.chatInput.style.height = 'auto';
-    dom.chatInput.disabled = true;
-    dom.chatSend.disabled = true;
+    setInputsDisabled(true);
+    showStreamingStatus('Assistant is responding...');
+  }
+
+  function setInputsDisabled(disabled) {
+    dom.chatInput.disabled = disabled;
+    dom.chatSend.disabled = disabled;
+    dom.attachBtn.disabled = disabled;
+  }
+
+  function showStreamingStatus(text) {
+    dom.chatStreaming.classList.remove('hidden');
+    var label = dom.chatStreaming.querySelector('.streaming-label');
+    if (label) label.textContent = text;
+  }
+
+  function hideStreamingStatus() {
+    dom.chatStreaming.classList.add('hidden');
   }
 
   // --------------------------------------------------------
