@@ -353,6 +353,60 @@ html, body {
   color: var(--accent-purple);
 }
 
+/* --- Streaming State --- */
+
+.message-streaming {
+  border-left: 3px solid var(--accent-purple);
+  animation: streaming-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes streaming-pulse {
+  0%, 100% { border-left-color: var(--accent-purple); }
+  50% { border-left-color: rgba(188, 140, 255, 0.3); }
+}
+
+.message-streaming .message-content > :last-child::after {
+  content: '\2588';
+  animation: cursor-blink 0.8s step-end infinite;
+  color: var(--accent-purple);
+  font-weight: 400;
+  margin-left: 1px;
+}
+
+/* Don't show cursor on tool-usage or code-block elements */
+.message-streaming .message-content > .tool-usage::after,
+.message-streaming .message-content > .code-block-wrapper::after {
+  content: none;
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Smooth transition when streaming ends.
+   Use msg-assistant-border (not transparent) so non-streaming messages
+   retain their visual appearance -- just 2px wider on the left. */
+.message-assistant {
+  border-left: 3px solid var(--msg-assistant-border);
+  transition: border-left-color 0.4s ease-out;
+}
+
+/* Respect reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .message-streaming {
+    animation: none;
+    border-left-color: var(--accent-purple);
+  }
+  .message-streaming .message-content > :last-child::after {
+    animation: none;
+    opacity: 1;
+  }
+  .message {
+    animation: none;
+  }
+}
+
 .message-content {
   color: var(--text-primary);
   word-wrap: break-word;
