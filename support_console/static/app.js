@@ -670,6 +670,11 @@
 
     // Update state
     state.isStreaming = true;
+
+    // Pre-create assistant message so cursor/border appear immediately
+    state.currentAssistantEl = createAssistantMessage();
+    state.currentAssistantContent = '';
+
     dom.chatInput.value = '';
     dom.chatInput.style.height = 'auto';
     dom.chatInput.disabled = true;
