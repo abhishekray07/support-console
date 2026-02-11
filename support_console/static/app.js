@@ -319,6 +319,9 @@
   }
 
   function handleDoneEvent(_data) {
+    if (state.currentAssistantEl) {
+      state.currentAssistantEl.classList.remove('message-streaming');
+    }
     state.isStreaming = false;
     state.currentAssistantEl = null;
     state.currentAssistantContent = '';
@@ -335,6 +338,9 @@
   }
 
   function handleErrorEvent(data) {
+    if (state.currentAssistantEl) {
+      state.currentAssistantEl.classList.remove('message-streaming');
+    }
     state.isStreaming = false;
     state.currentAssistantEl = null;
     state.currentAssistantContent = '';
@@ -378,7 +384,7 @@
   function createAssistantMessage() {
     clearWelcome();
     const el = document.createElement('div');
-    el.className = 'message message-assistant';
+    el.className = 'message message-assistant message-streaming';
 
     const roleEl = document.createElement('div');
     roleEl.className = 'message-role';
