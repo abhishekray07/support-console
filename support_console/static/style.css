@@ -641,15 +641,13 @@ html, body {
   border-radius: var(--radius-sm);
 }
 
-/* --- Streaming Indicator --- */
+/* --- Streaming Controls --- */
 
 .chat-streaming {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
   padding: 8px 16px;
-  color: var(--text-tertiary);
-  font-size: var(--font-size-sm);
   flex-shrink: 0;
 }
 
@@ -657,30 +655,29 @@ html, body {
   display: none;
 }
 
-.streaming-dots {
-  display: flex;
-  gap: 3px;
+.btn-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
 }
 
-.streaming-dots span {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--text-tertiary);
-  animation: streaming-bounce 1.2s ease-in-out infinite;
+.btn-stop:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--text-tertiary);
 }
 
-.streaming-dots span:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.streaming-dots span:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-@keyframes streaming-bounce {
-  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
-  30% { opacity: 1; transform: translateY(-3px); }
+.btn-stop:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
 }
 
 /* --- Chat Input Area --- */

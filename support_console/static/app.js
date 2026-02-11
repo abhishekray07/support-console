@@ -78,6 +78,7 @@
     dom.reconnectingOverlay = document.getElementById('reconnecting-overlay');
     dom.main = document.getElementById('main');
     dom.chatSrStatus = document.getElementById('chat-sr-status');
+    dom.chatStop = document.getElementById('chat-stop');
   }
 
   // --------------------------------------------------------
@@ -283,6 +284,9 @@
       case 'history_update':
         handleHistoryUpdate(data);
         break;
+      case 'cancelled':
+        handleCancelledEvent(data);
+        break;
       case 'error':
         handleErrorEvent(data);
         break;
@@ -397,6 +401,12 @@
     appendSystemMessage('Error: ' + (data.error || 'Unknown error'), 'error');
     dom.chatSrStatus.textContent = 'Response error';
     autoScrollChat();
+  }
+
+  function handleCancelledEvent(_data) {
+    // Server confirmed cancellation; finalize UI if not already done by stopGenerating
+    finalizeStreaming();
+    dom.chatSrStatus.textContent = 'Response stopped';
   }
 
   // --------------------------------------------------------
@@ -664,6 +674,22 @@
     dom.chatInput.style.height = 'auto';
     dom.chatInput.disabled = true;
     dom.chatSend.disabled = true;
+  }
+
+  function stopGenerating() {
+    if (!state.isStreaming) return;
+
+    // Send cancel to server
+    if (state.wsConnected && state.ws) {
+      try {
+        state.ws.send(JSON.stringify({ type: 'cancel' }));
+      } catch (e) {
+        console.error('Failed to send cancel:', e);
+      }
+    }
+
+    finalizeStreaming();
+    dom.chatSrStatus.textContent = 'Response stopped';
   }
 
   // --------------------------------------------------------
@@ -1348,6 +1374,15 @@
       var distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
       state.isAutoScrollSticky = distanceFromBottom < CONFIG.chatAutoScrollThreshold;
     });
+    dom.chatStop.addEventListener('click', stopGenerating);
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && state.isStreaming) {
+        e.preventDefault();
+        stopGenerating();
+      }
+    });
+
     setupNotebookControls();
     setupDivider();
     connectWebSocket();

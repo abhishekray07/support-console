@@ -54,12 +54,14 @@
         </div>
       </div>
 
-      <!-- Streaming indicator -->
-      <div id="chat-streaming" class="chat-streaming hidden" role="status" aria-live="polite">
-        <div class="streaming-dots" aria-hidden="true">
-          <span></span><span></span><span></span>
-        </div>
-        <span class="streaming-label">Assistant is responding...</span>
+      <!-- Stop button (visible during streaming) -->
+      <div id="chat-streaming" class="chat-streaming hidden">
+        <button id="chat-stop" class="btn btn-stop" title="Stop generating (Escape)" aria-label="Stop generating response" aria-keyshortcuts="Escape">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+          </svg>
+          <span>Stop</span>
+        </button>
       </div>
       <span id="chat-sr-status" class="sr-only" aria-live="polite"></span>
 
