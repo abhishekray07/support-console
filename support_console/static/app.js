@@ -75,6 +75,7 @@
     dom.clearNotebook = document.getElementById('clear-notebook');
     dom.reconnectingOverlay = document.getElementById('reconnecting-overlay');
     dom.main = document.getElementById('main');
+    dom.chatSrStatus = document.getElementById('chat-sr-status');
   }
 
   // --------------------------------------------------------
@@ -326,6 +327,7 @@
     state.currentAssistantEl = null;
     state.currentAssistantContent = '';
     dom.chatStreaming.classList.add('hidden');
+    dom.chatSrStatus.textContent = 'Response complete';
     dom.chatInput.disabled = false;
     dom.chatSend.disabled = false;
     dom.chatInput.focus();
@@ -345,6 +347,7 @@
     state.currentAssistantEl = null;
     state.currentAssistantContent = '';
     dom.chatStreaming.classList.add('hidden');
+    dom.chatSrStatus.textContent = 'Response error';
     dom.chatInput.disabled = false;
     dom.chatSend.disabled = false;
 
@@ -397,6 +400,7 @@
     el.appendChild(contentEl);
     dom.chatMessages.appendChild(el);
     dom.chatStreaming.classList.remove('hidden');
+    dom.chatSrStatus.textContent = 'Assistant is responding';
     return el;
   }
 
