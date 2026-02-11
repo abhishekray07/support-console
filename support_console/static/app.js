@@ -39,6 +39,8 @@
     isStreaming: false,
     currentAssistantEl: null,
     currentAssistantContent: '',
+    isAutoScrollSticky: true,   // tracks if user is scrolled to bottom
+    scrollPending: false,        // rAF throttle flag
 
     // Notebook
     cells: [],
@@ -380,7 +382,7 @@
     el.appendChild(roleEl);
     el.appendChild(contentEl);
     dom.chatMessages.appendChild(el);
-    autoScrollChat();
+    scrollToBottomImmediate();
     return el;
   }
 
@@ -401,6 +403,7 @@
     dom.chatMessages.appendChild(el);
     dom.chatStreaming.classList.remove('hidden');
     dom.chatSrStatus.textContent = 'Assistant is responding';
+    scrollToBottomImmediate();
     return el;
   }
 
@@ -547,12 +550,22 @@
   }
 
   function autoScrollChat() {
-    const el = dom.chatMessages;
-    const threshold = CONFIG.chatAutoScrollThreshold;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom < threshold) {
-      el.scrollTop = el.scrollHeight;
-    }
+    if (state.scrollPending) return;
+    state.scrollPending = true;
+    requestAnimationFrame(function () {
+      if (state.isAutoScrollSticky) {
+        dom.chatMessages.scrollTo({
+          top: dom.chatMessages.scrollHeight,
+          behavior: 'smooth',
+        });
+      }
+      state.scrollPending = false;
+    });
+  }
+
+  function scrollToBottomImmediate() {
+    state.isAutoScrollSticky = true;
+    dom.chatMessages.scrollTop = dom.chatMessages.scrollHeight;
   }
 
   function sendMessage() {
@@ -1265,6 +1278,11 @@
     cacheDom();
     configureMarked();
     setupChatInput();
+    dom.chatMessages.addEventListener('scroll', function () {
+      var el = dom.chatMessages;
+      var distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      state.isAutoScrollSticky = distanceFromBottom < CONFIG.chatAutoScrollThreshold;
+    });
     setupNotebookControls();
     setupDivider();
     connectWebSocket();
