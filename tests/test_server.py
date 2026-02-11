@@ -1,9 +1,12 @@
 """Tests for the FastAPI server endpoints."""
 
+import asyncio
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from httpx import ASGITransport, AsyncClient
+from starlette.testclient import TestClient
 
 from support_console.server import create_app, AppState
 from support_console.sessions import SessionStore
@@ -179,3 +182,81 @@ class TestStaticFiles:
         resp = await client.get("/")
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
+
+
+@pytest.fixture
+def ws_app(sample_app_root, tmp_db_path):
+    """Create a FastAPI app for synchronous WebSocket testing.
+
+    Uses Starlette TestClient which triggers ASGI lifespan, so we
+    patch constructors to avoid real kernel/API connections.
+    """
+    with patch("support_console.server.KernelSession") as MockKernel, \
+         patch("support_console.server.ChatEngine") as MockChat:
+
+        mock_kernel = MagicMock()
+        mock_kernel.is_alive = True
+        mock_kernel.is_busy = False
+        mock_kernel.start = AsyncMock(return_value="Kernel ready")
+        mock_kernel.shutdown = AsyncMock()
+        MockKernel.return_value = mock_kernel
+
+        mock_chat = MagicMock()
+        MockChat.return_value = mock_chat
+
+        application = create_app(
+            app_root=sample_app_root,
+            session_db=tmp_db_path,
+            api_key="sk-test-key",
+        )
+
+        yield application
+
+
+class TestChatWebSocket:
+    """Tests for the chat WebSocket endpoint."""
+
+    def test_cancel_message_accepted(self, ws_app):
+        """WebSocket accepts cancel messages and interrupts the stream."""
+        # Mock chat_stream to stream slowly
+        async def slow_stream(messages, cancel_event=None):
+            for i in range(10):
+                if cancel_event and cancel_event.is_set():
+                    yield {"type": "done", "stop_reason": "cancelled", "message": None}
+                    return
+                yield {"type": "text", "content": f"chunk {i} "}
+                await asyncio.sleep(0.1)
+            yield {"type": "done", "stop_reason": "end_turn", "message": {}}
+
+        with TestClient(ws_app) as client:
+            # Assign mock AFTER TestClient enters (lifespan runs), so it
+            # won't be overwritten by lifespan initialization.
+            ws_app.state.console.chat_engine.chat_stream = slow_stream
+
+            with client.websocket_connect("/api/chat") as ws:
+                ws.send_json({"message": "hello", "messages": []})
+                # Read first text chunk to confirm streaming started
+                data = ws.receive_json()
+                assert data["type"] == "text"
+
+                # Send cancel
+                ws.send_json({"type": "cancel"})
+
+                # Should eventually get done or history_update
+                events = []
+                for _ in range(20):  # Safety limit to avoid hanging
+                    ev = ws.receive_json()
+                    events.append(ev)
+                    if ev["type"] in ("done", "history_update"):
+                        break
+
+                types = [e["type"] for e in events]
+                assert "done" in types or "history_update" in types
+
+                # Verify the stream was actually cancelled (not just completed normally).
+                # The done event should have stop_reason "cancelled", proving
+                # the cancel_event was passed through and set.
+                done_events = [e for e in events if e["type"] == "done"]
+                assert any(
+                    e.get("stop_reason") == "cancelled" for e in done_events
+                ), f"Expected cancelled stop_reason, got events: {events}"

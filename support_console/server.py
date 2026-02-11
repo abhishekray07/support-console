@@ -7,6 +7,7 @@ Provides:
 - Static file serving for the web UI
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -232,14 +233,70 @@ def create_app(
                 messages = list(history)
                 messages.append({"role": "user", "content": user_message})
 
-                async for event in engine.chat_stream(messages):
-                    await ws.send_json(event)
+                # Set up cancellation
+                cancel_event = asyncio.Event()
 
-                # Send back the updated messages list so client can maintain history
-                await ws.send_json({
-                    "type": "history_update",
-                    "messages": messages,
-                })
+                async def _stream_to_ws():
+                    async for event in engine.chat_stream(messages, cancel_event=cancel_event):
+                        await ws.send_json(event)
+
+                stream_task = asyncio.create_task(_stream_to_ws())
+
+                try:
+                    # Listen for cancel while streaming
+                    while not stream_task.done():
+                        receive_task = asyncio.create_task(ws.receive_text())
+                        done_tasks, pending_tasks = await asyncio.wait(
+                            {stream_task, receive_task},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+
+                        if receive_task in done_tasks:
+                            try:
+                                raw_msg = receive_task.result()
+                                msg_data = json.loads(raw_msg)
+                                if msg_data.get("type") == "cancel":
+                                    cancel_event.set()
+                                    await stream_task
+                                    break
+                            except (json.JSONDecodeError, WebSocketDisconnect):
+                                cancel_event.set()
+                                await stream_task
+                                break
+                        else:
+                            # Stream finished first; cancel pending receive
+                            receive_task.cancel()
+                            try:
+                                await receive_task
+                            except asyncio.CancelledError:
+                                pass
+
+                    # Check for exceptions from stream task
+                    if stream_task.done() and not stream_task.cancelled():
+                        exc = stream_task.exception()
+                        if exc:
+                            raise exc
+
+                except WebSocketDisconnect:
+                    cancel_event.set()
+                    if not stream_task.done():
+                        stream_task.cancel()
+                        try:
+                            await stream_task
+                        except asyncio.CancelledError:
+                            pass
+                    raise  # Re-raise to be caught by outer handler
+
+                # Send back updated messages (even on cancel, for history consistency).
+                # Wrap in try/except because the socket may have disconnected
+                # (e.g., cancel triggered by disconnect).
+                try:
+                    await ws.send_json({
+                        "type": "history_update",
+                        "messages": messages,
+                    })
+                except (WebSocketDisconnect, Exception):
+                    pass
 
         except WebSocketDisconnect:
             logger.info("Chat WebSocket disconnected")
