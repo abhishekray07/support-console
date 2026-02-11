@@ -47,10 +47,15 @@
         <span class="panel-title">Chat</span>
       </div>
 
-      <div id="chat-messages" class="chat-messages" role="log" aria-live="polite" aria-label="Chat messages">
+      <div id="chat-messages" class="chat-messages" role="log" aria-label="Chat messages">
         <!-- Messages will be rendered here -->
         <div class="chat-welcome">
-          <p>Welcome to Support Console. Type a message to begin.</p>
+          <div class="chat-welcome-icon" aria-hidden="true">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+          </div>
+          <p>Ask Claude about your Flask app, or describe a bug to debug.</p>
         </div>
       </div>
 
@@ -61,6 +66,8 @@
         </div>
         <span class="streaming-label">Assistant is responding...</span>
       </div>
+
+      <div id="chat-announce" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 
       <!-- Attachment preview -->
       <div id="attachment-preview" class="attachment-preview hidden" role="list" aria-label="Attached files">
@@ -112,7 +119,13 @@
       <div id="notebook-cells" class="notebook-cells" role="list" aria-label="Notebook cells">
         <!-- Cells will be rendered here -->
         <div class="notebook-empty">
-          <p>No cells yet. Send code from chat or add a new cell.</p>
+          <div class="notebook-empty-icon" aria-hidden="true">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="16 18 22 12 16 6"></polyline>
+              <polyline points="8 6 2 12 8 18"></polyline>
+            </svg>
+          </div>
+          <p>Code from Claude appears here. You can also add cells to run queries directly.</p>
         </div>
       </div>
 
