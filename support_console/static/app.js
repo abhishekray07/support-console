@@ -21,6 +21,14 @@
     kernelPollInterval: 10000,
     chatAutoScrollThreshold: 80,
     maxInputHeight: 160,
+    maxFileSize: 10 * 1024 * 1024,
+    maxFiles: 5,
+    allowedImageTypes: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
+    allowedTextExtensions: [
+      '.txt', '.log', '.csv', '.json', '.xml', '.yaml',
+      '.py', '.js', '.ts', '.html', '.css', '.md',
+      '.sh', '.sql', '.toml', '.ini', '.cfg', '.conf',
+    ],
   };
 
   // --------------------------------------------------------
@@ -51,8 +59,16 @@
     kernelBusy: false,
     kernelPollTimer: null,
 
+    // Render throttle
+    renderPending: false,
+
     // Divider drag
     isDragging: false,
+
+    // File uploads
+    pendingFiles: [],
+    isUploading: false,
+    dragCounter: 0,
   };
 
   // --------------------------------------------------------
@@ -76,9 +92,15 @@
     dom.addCell = document.getElementById('add-cell');
     dom.clearNotebook = document.getElementById('clear-notebook');
     dom.reconnectingOverlay = document.getElementById('reconnecting-overlay');
+    dom.chatAnnounce = document.getElementById('chat-announce');
     dom.main = document.getElementById('main');
     dom.chatSrStatus = document.getElementById('chat-sr-status');
     dom.chatStop = document.getElementById('chat-stop');
+    dom.attachBtn = document.getElementById('attach-btn');
+    dom.fileInput = document.getElementById('file-input');
+    dom.attachmentPreview = document.getElementById('attachment-preview');
+    dom.dropOverlay = document.getElementById('drop-overlay');
+    dom.fileAnnounce = document.getElementById('file-announce');
   }
 
   // --------------------------------------------------------
@@ -180,6 +202,23 @@
       }
     }
     return insideFence;
+  }
+
+  function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function getFileExtension(name) {
+    var dot = name.lastIndexOf('.');
+    return dot >= 0 ? name.slice(dot).toLowerCase() : '';
+  }
+
+  function isAllowedFile(file) {
+    if (CONFIG.allowedImageTypes.indexOf(file.type) !== -1) return true;
+    var ext = getFileExtension(file.name);
+    return CONFIG.allowedTextExtensions.indexOf(ext) !== -1;
   }
 
   // --------------------------------------------------------
@@ -379,9 +418,8 @@
     state.isStreaming = false;
     state.currentAssistantEl = null;
     state.currentAssistantContent = '';
-    dom.chatStreaming.classList.add('hidden');
-    dom.chatInput.disabled = false;
-    dom.chatSend.disabled = false;
+    hideStreamingStatus();
+    setInputsDisabled(false);
     dom.chatInput.focus();
   }
 
@@ -418,21 +456,40 @@
     if (welcome) welcome.remove();
   }
 
-  function createUserMessage(text) {
+  function createUserMessage(text, attachments) {
     clearWelcome();
-    const el = document.createElement('div');
+    if (dom.chatAnnounce) {
+      dom.chatAnnounce.textContent = 'Message sent.';
+    }
+    var el = document.createElement('div');
     el.className = 'message message-user';
 
-    const roleEl = document.createElement('div');
+    var roleEl = document.createElement('div');
     roleEl.className = 'message-role';
     roleEl.textContent = 'You';
 
-    const contentEl = document.createElement('div');
+    var contentEl = document.createElement('div');
     contentEl.className = 'message-content';
-    contentEl.textContent = text;
+    if (text) {
+      contentEl.textContent = text;
+    }
 
     el.appendChild(roleEl);
     el.appendChild(contentEl);
+
+    // Attachment chips
+    if (attachments && attachments.length > 0) {
+      var chipsEl = document.createElement('div');
+      chipsEl.className = 'message-attachments';
+      for (var i = 0; i < attachments.length; i++) {
+        var chip = document.createElement('span');
+        chip.className = 'attachment-chip';
+        chip.textContent = attachments[i].name + ' (' + formatFileSize(attachments[i].size) + ')';
+        chipsEl.appendChild(chip);
+      }
+      el.appendChild(chipsEl);
+    }
+
     dom.chatMessages.appendChild(el);
     scrollToBottomImmediate();
     return el;
@@ -643,27 +700,76 @@
     dom.chatMessages.scrollTop = dom.chatMessages.scrollHeight;
   }
 
-  function sendMessage() {
-    const text = dom.chatInput.value.trim();
-    if (!text || state.isStreaming) return;
+  async function sendMessage() {
+    var text = dom.chatInput.value.trim();
+    if ((!text && state.pendingFiles.length === 0) || state.isStreaming || state.isUploading) return;
 
     if (!state.wsConnected) {
       appendSystemMessage('Not connected to server. Please wait for reconnection.', 'error');
       return;
     }
 
-    // Show user message
-    createUserMessage(text);
+    // Show user message with attachment info
+    var attachmentMeta = state.pendingFiles.map(function (f) {
+      return { name: f.name, size: f.size, type: f.type };
+    });
+    createUserMessage(text, attachmentMeta.length > 0 ? attachmentMeta : null);
 
-    // Send to server
-    const payload = {
-      message: text,
+    var fileIds = [];
+
+    // Upload files if any
+    if (state.pendingFiles.length > 0) {
+      state.isUploading = true;
+      setInputsDisabled(true);
+      showStreamingStatus('Uploading files...');
+
+      try {
+        var formData = new FormData();
+        for (var i = 0; i < state.pendingFiles.length; i++) {
+          formData.append('files', state.pendingFiles[i]);
+        }
+
+        var resp = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          body: formData,
+        });
+
+        if (!resp.ok) {
+          var err = await resp.json().catch(function () { return { detail: 'Upload failed' }; });
+          throw new Error(err.detail || 'Upload failed (' + resp.status + ')');
+        }
+
+        var result = await resp.json();
+        fileIds = result.files.map(function (f) { return f.id; });
+      } catch (e) {
+        state.isUploading = false;
+        setInputsDisabled(false);
+        hideStreamingStatus();
+        appendSystemMessage('Upload failed: ' + e.message, 'error');
+        return; // Keep files for retry
+      }
+
+      // Clear pending files on success
+      state.pendingFiles = [];
+      renderAttachmentPreview();
+      state.isUploading = false;
+    }
+
+    // Send to server via WebSocket
+    var payload = {
+      message: text || '(see attached files)',
       messages: state.messages,
     };
+    if (fileIds.length > 0) {
+      payload.file_ids = fileIds;
+    }
 
     try {
       state.ws.send(JSON.stringify(payload));
     } catch (e) {
+      setInputsDisabled(false);
+      hideStreamingStatus();
       appendSystemMessage('Failed to send message: ' + e.message, 'error');
       return;
     }
@@ -677,8 +783,24 @@
 
     dom.chatInput.value = '';
     dom.chatInput.style.height = 'auto';
-    dom.chatInput.disabled = true;
-    dom.chatSend.disabled = true;
+    setInputsDisabled(true);
+    showStreamingStatus('Assistant is responding...');
+  }
+
+  function setInputsDisabled(disabled) {
+    dom.chatInput.disabled = disabled;
+    dom.chatSend.disabled = disabled;
+    dom.attachBtn.disabled = disabled;
+  }
+
+  function showStreamingStatus(text) {
+    dom.chatStreaming.classList.remove('hidden');
+    var label = dom.chatStreaming.querySelector('.streaming-label');
+    if (label) label.textContent = text;
+  }
+
+  function hideStreamingStatus() {
+    dom.chatStreaming.classList.add('hidden');
   }
 
   function stopGenerating() {
@@ -947,8 +1069,30 @@
     if (state.cells.length === 0 && !dom.notebookCells.querySelector('.notebook-empty')) {
       var emptyDiv = document.createElement('div');
       emptyDiv.className = 'notebook-empty';
+
+      var icon = document.createElement('div');
+      icon.className = 'notebook-empty-icon';
+      icon.setAttribute('aria-hidden', 'true');
+      var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('width', '32');
+      svg.setAttribute('height', '32');
+      svg.setAttribute('viewBox', '0 0 24 24');
+      svg.setAttribute('fill', 'none');
+      svg.setAttribute('stroke', 'currentColor');
+      svg.setAttribute('stroke-width', '1.5');
+      svg.setAttribute('stroke-linecap', 'round');
+      svg.setAttribute('stroke-linejoin', 'round');
+      var poly1 = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      poly1.setAttribute('points', '16 18 22 12 16 6');
+      var poly2 = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      poly2.setAttribute('points', '8 6 2 12 8 18');
+      svg.appendChild(poly1);
+      svg.appendChild(poly2);
+      icon.appendChild(svg);
+      emptyDiv.appendChild(icon);
+
       var p = document.createElement('p');
-      p.textContent = 'No cells yet. Send code from chat or add a new cell.';
+      p.textContent = 'Code from Claude appears here. You can also add cells to run queries directly.';
       emptyDiv.appendChild(p);
       dom.notebookCells.appendChild(emptyDiv);
     }
@@ -1217,6 +1361,204 @@
   }
 
   // --------------------------------------------------------
+  // File Upload
+  // --------------------------------------------------------
+
+  function setupFileUpload() {
+    // Paperclip button opens file picker
+    dom.attachBtn.addEventListener('click', function () {
+      if (!state.isStreaming && !state.isUploading) {
+        dom.fileInput.click();
+      }
+    });
+
+    // File input change
+    dom.fileInput.addEventListener('change', function () {
+      addFiles(Array.from(this.files));
+      this.value = ''; // reset so same file can be re-selected
+    });
+
+    // Drag and drop on chat panel
+    dom.chatPanel.addEventListener('dragenter', function (e) {
+      e.preventDefault();
+      state.dragCounter++;
+      if (state.dragCounter === 1) {
+        dom.dropOverlay.classList.remove('hidden');
+      }
+    });
+
+    dom.chatPanel.addEventListener('dragleave', function (e) {
+      e.preventDefault();
+      state.dragCounter--;
+      if (state.dragCounter === 0) {
+        dom.dropOverlay.classList.add('hidden');
+      }
+    });
+
+    dom.chatPanel.addEventListener('dragover', function (e) {
+      e.preventDefault();
+    });
+
+    dom.chatPanel.addEventListener('drop', function (e) {
+      e.preventDefault();
+      state.dragCounter = 0;
+      dom.dropOverlay.classList.add('hidden');
+      if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+        addFiles(Array.from(e.dataTransfer.files));
+      }
+    });
+
+    // Clipboard paste for images
+    dom.chatInput.addEventListener('paste', function (e) {
+      if (!e.clipboardData || !e.clipboardData.items) return;
+      var imageFiles = [];
+      for (var i = 0; i < e.clipboardData.items.length; i++) {
+        var item = e.clipboardData.items[i];
+        if (item.type.indexOf('image/') === 0) {
+          var file = item.getAsFile();
+          if (file) {
+            // Give pasted images a meaningful name
+            var ext = file.type.split('/')[1] || 'png';
+            var named = new File([file], 'clipboard-' + Date.now() + '.' + ext, { type: file.type });
+            imageFiles.push(named);
+          }
+        }
+      }
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        addFiles(imageFiles);
+      }
+      // If no images found, let the default paste (text) happen
+    });
+  }
+
+  function addFiles(files) {
+    var errors = [];
+
+    for (var i = 0; i < files.length; i++) {
+      var file = files[i];
+
+      // Check total count
+      if (state.pendingFiles.length >= CONFIG.maxFiles) {
+        errors.push('Maximum ' + CONFIG.maxFiles + ' files allowed');
+        break;
+      }
+
+      // Check size
+      if (file.size > CONFIG.maxFileSize) {
+        errors.push(file.name + ' exceeds ' + formatFileSize(CONFIG.maxFileSize) + ' limit');
+        continue;
+      }
+
+      // Check type
+      if (!isAllowedFile(file)) {
+        errors.push(file.name + ': unsupported file type');
+        continue;
+      }
+
+      // Check for duplicate filename
+      var isDuplicate = state.pendingFiles.some(function (f) { return f.name === file.name; });
+      if (isDuplicate) {
+        errors.push(file.name + ': already attached');
+        continue;
+      }
+
+      state.pendingFiles.push(file);
+    }
+
+    if (errors.length > 0) {
+      appendSystemMessage(errors.join('. '), 'error');
+    }
+
+    renderAttachmentPreview();
+    announceFiles();
+  }
+
+  function removeFile(index) {
+    var file = state.pendingFiles[index];
+    state.pendingFiles.splice(index, 1);
+    renderAttachmentPreview();
+    announceFiles();
+  }
+
+  function announceFiles() {
+    var count = state.pendingFiles.length;
+    if (count === 0) {
+      dom.fileAnnounce.textContent = 'All files removed';
+    } else {
+      dom.fileAnnounce.textContent = count + ' file' + (count !== 1 ? 's' : '') + ' attached';
+    }
+  }
+
+  function renderAttachmentPreview() {
+    var container = dom.attachmentPreview;
+    // Clear existing
+    while (container.firstChild) {
+      container.removeChild(container.firstChild);
+    }
+
+    if (state.pendingFiles.length === 0) {
+      container.classList.add('hidden');
+      return;
+    }
+
+    container.classList.remove('hidden');
+
+    for (var i = 0; i < state.pendingFiles.length; i++) {
+      (function (index) {
+        var file = state.pendingFiles[index];
+        var item = document.createElement('div');
+        item.className = 'attachment-item';
+        item.setAttribute('role', 'listitem');
+        item.setAttribute('aria-label', file.name + ', ' + formatFileSize(file.size));
+
+        if (file.type && file.type.indexOf('image/') === 0) {
+          var thumb = document.createElement('img');
+          thumb.className = 'attachment-thumb';
+          var url = URL.createObjectURL(file);
+          thumb.src = url;
+          thumb.alt = file.name;
+          thumb.onload = function () { URL.revokeObjectURL(url); };
+          item.appendChild(thumb);
+        } else {
+          var icon = document.createElement('span');
+          icon.className = 'attachment-icon';
+          icon.textContent = '\uD83D\uDCC4'; // file emoji as fallback
+          icon.setAttribute('aria-hidden', 'true');
+          item.appendChild(icon);
+        }
+
+        var nameSpan = document.createElement('span');
+        nameSpan.className = 'attachment-name';
+        nameSpan.textContent = file.name;
+        item.appendChild(nameSpan);
+
+        var sizeSpan = document.createElement('span');
+        sizeSpan.className = 'attachment-size';
+        sizeSpan.textContent = formatFileSize(file.size);
+        item.appendChild(sizeSpan);
+
+        var removeBtn = document.createElement('button');
+        removeBtn.className = 'attachment-remove';
+        removeBtn.setAttribute('aria-label', 'Remove ' + file.name);
+        removeBtn.textContent = '\u2715';
+        removeBtn.addEventListener('click', function () {
+          removeFile(index);
+        });
+        item.appendChild(removeBtn);
+
+        container.appendChild(item);
+      })(i);
+    }
+
+    // File count
+    var countEl = document.createElement('span');
+    countEl.className = 'attachment-count';
+    countEl.textContent = state.pendingFiles.length + '/' + CONFIG.maxFiles;
+    container.appendChild(countEl);
+  }
+
+  // --------------------------------------------------------
   // Notebook Controls
   // --------------------------------------------------------
 
@@ -1243,14 +1585,21 @@
     var chatPanel = dom.chatPanel;
     var notebookPanel = dom.notebookPanel;
 
-    var startX = 0;
-    var startChatWidth = 0;
+    function isVerticalLayout() {
+      return window.innerWidth <= 700;
+    }
+
+    var startPos = 0;
+    var startSize = 0;
 
     function onMouseDown(e) {
       e.preventDefault();
       state.isDragging = true;
-      startX = e.clientX;
-      startChatWidth = chatPanel.getBoundingClientRect().width;
+      var vertical = isVerticalLayout();
+      startPos = vertical ? e.clientY : e.clientX;
+      startSize = vertical
+        ? chatPanel.getBoundingClientRect().height
+        : chatPanel.getBoundingClientRect().width;
       divider.classList.add('dragging');
       document.body.classList.add('no-select');
 
@@ -1261,18 +1610,24 @@
     function onMouseMove(e) {
       if (!state.isDragging) return;
 
-      var dx = e.clientX - startX;
-      var totalWidth = main.getBoundingClientRect().width - divider.getBoundingClientRect().width;
-      var newChatWidth = startChatWidth + dx;
+      var vertical = isVerticalLayout();
+      var d = (vertical ? e.clientY : e.clientX) - startPos;
+      var dividerSize = vertical
+        ? divider.getBoundingClientRect().height
+        : divider.getBoundingClientRect().width;
+      var totalSize = (vertical
+        ? main.getBoundingClientRect().height
+        : main.getBoundingClientRect().width) - dividerSize;
+      var newChatSize = startSize + d;
 
-      var minPanel = 280;
-      if (newChatWidth < minPanel || (totalWidth - newChatWidth) < minPanel) return;
+      var minPanel = vertical ? 200 : 280;
+      if (newChatSize < minPanel || (totalSize - newChatSize) < minPanel) return;
 
-      var chatPercent = (newChatWidth / totalWidth) * 100;
-      var notebookPercent = 100 - chatPercent;
+      var chatPct = (newChatSize / totalSize) * 100;
+      var notebookPct = 100 - chatPct;
 
-      chatPanel.style.flex = '0 0 ' + chatPercent + '%';
-      notebookPanel.style.flex = '0 0 ' + notebookPercent + '%';
+      chatPanel.style.flex = '0 0 ' + chatPct + '%';
+      notebookPanel.style.flex = '0 0 ' + notebookPct + '%';
     }
 
     function onMouseUp() {
@@ -1285,33 +1640,47 @@
 
     divider.addEventListener('mousedown', onMouseDown);
 
-    // Touch support
     // Keyboard support for divider
     divider.addEventListener('keydown', function (e) {
       var step = 40;
-      var totalWidth = main.getBoundingClientRect().width - divider.getBoundingClientRect().width;
-      var chatWidth = chatPanel.getBoundingClientRect().width;
-      var minPanel = 280;
-      var newChatWidth;
+      var vertical = isVerticalLayout();
+      var keys = vertical ? ['ArrowUp', 'ArrowDown'] : ['ArrowLeft', 'ArrowRight'];
 
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      if (e.key === keys[0] || e.key === keys[1]) {
         e.preventDefault();
-        newChatWidth = chatWidth + (e.key === 'ArrowRight' ? step : -step);
-        if (newChatWidth < minPanel || (totalWidth - newChatWidth) < minPanel) return;
-        var chatPct = (newChatWidth / totalWidth) * 100;
+        var dividerSize = vertical
+          ? divider.getBoundingClientRect().height
+          : divider.getBoundingClientRect().width;
+        var totalSize = (vertical
+          ? main.getBoundingClientRect().height
+          : main.getBoundingClientRect().width) - dividerSize;
+        var chatSize = vertical
+          ? chatPanel.getBoundingClientRect().height
+          : chatPanel.getBoundingClientRect().width;
+        var minPanel = vertical ? 200 : 280;
+        var newChatSize = chatSize + (e.key === keys[1] ? step : -step);
+
+        if (newChatSize < minPanel || (totalSize - newChatSize) < minPanel) return;
+
+        var chatPct = (newChatSize / totalSize) * 100;
         var notebookPct = 100 - chatPct;
         chatPanel.style.flex = '0 0 ' + chatPct + '%';
         notebookPanel.style.flex = '0 0 ' + notebookPct + '%';
       }
     });
 
+    // Touch support
     divider.addEventListener('touchstart', function (e) {
       var touch = e.touches[0];
-      onMouseDown({ preventDefault: function () {}, clientX: touch.clientX });
+      onMouseDown({
+        preventDefault: function () {},
+        clientX: touch.clientX,
+        clientY: touch.clientY,
+      });
 
       function onTouchMove(ev) {
         var t = ev.touches[0];
-        onMouseMove({ clientX: t.clientX });
+        onMouseMove({ clientX: t.clientX, clientY: t.clientY });
       }
 
       function onTouchEnd() {
@@ -1388,6 +1757,7 @@
       }
     });
 
+    setupFileUpload();
     setupNotebookControls();
     setupDivider();
     connectWebSocket();
