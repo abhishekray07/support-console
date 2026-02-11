@@ -313,16 +313,23 @@ html, body {
 
 .chat-welcome {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: var(--space-3);
   height: 100%;
   color: var(--text-tertiary);
   font-size: var(--font-size-sm);
 }
 
+.chat-welcome-icon {
+  opacity: 0.4;
+}
+
 .chat-welcome p {
   text-align: center;
-  padding: var(--space-6);
+  padding: 0 var(--space-6);
+  color: var(--text-secondary);
 }
 
 /* --- Message --- */
@@ -814,11 +821,23 @@ html, body {
 
 .notebook-empty {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: var(--space-3);
   height: 100%;
   color: var(--text-tertiary);
   font-size: var(--font-size-sm);
+}
+
+.notebook-empty-icon {
+  opacity: 0.4;
+}
+
+.notebook-empty p {
+  text-align: center;
+  padding: 0 var(--space-6);
+  color: var(--text-secondary);
 }
 
 .notebook-footer {

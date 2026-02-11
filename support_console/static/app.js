@@ -847,8 +847,30 @@
     if (state.cells.length === 0 && !dom.notebookCells.querySelector('.notebook-empty')) {
       var emptyDiv = document.createElement('div');
       emptyDiv.className = 'notebook-empty';
+
+      var icon = document.createElement('div');
+      icon.className = 'notebook-empty-icon';
+      icon.setAttribute('aria-hidden', 'true');
+      var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('width', '32');
+      svg.setAttribute('height', '32');
+      svg.setAttribute('viewBox', '0 0 24 24');
+      svg.setAttribute('fill', 'none');
+      svg.setAttribute('stroke', 'currentColor');
+      svg.setAttribute('stroke-width', '1.5');
+      svg.setAttribute('stroke-linecap', 'round');
+      svg.setAttribute('stroke-linejoin', 'round');
+      var poly1 = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      poly1.setAttribute('points', '16 18 22 12 16 6');
+      var poly2 = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      poly2.setAttribute('points', '8 6 2 12 8 18');
+      svg.appendChild(poly1);
+      svg.appendChild(poly2);
+      icon.appendChild(svg);
+      emptyDiv.appendChild(icon);
+
       var p = document.createElement('p');
-      p.textContent = 'No cells yet. Send code from chat or add a new cell.';
+      p.textContent = 'Code from Claude appears here. You can also add cells to run queries directly.';
       emptyDiv.appendChild(p);
       dom.notebookCells.appendChild(emptyDiv);
     }
@@ -1143,14 +1165,21 @@
     var chatPanel = dom.chatPanel;
     var notebookPanel = dom.notebookPanel;
 
-    var startX = 0;
-    var startChatWidth = 0;
+    function isVerticalLayout() {
+      return window.innerWidth <= 700;
+    }
+
+    var startPos = 0;
+    var startSize = 0;
 
     function onMouseDown(e) {
       e.preventDefault();
       state.isDragging = true;
-      startX = e.clientX;
-      startChatWidth = chatPanel.getBoundingClientRect().width;
+      var vertical = isVerticalLayout();
+      startPos = vertical ? e.clientY : e.clientX;
+      startSize = vertical
+        ? chatPanel.getBoundingClientRect().height
+        : chatPanel.getBoundingClientRect().width;
       divider.classList.add('dragging');
       document.body.classList.add('no-select');
 
@@ -1161,18 +1190,24 @@
     function onMouseMove(e) {
       if (!state.isDragging) return;
 
-      var dx = e.clientX - startX;
-      var totalWidth = main.getBoundingClientRect().width - divider.getBoundingClientRect().width;
-      var newChatWidth = startChatWidth + dx;
+      var vertical = isVerticalLayout();
+      var d = (vertical ? e.clientY : e.clientX) - startPos;
+      var dividerSize = vertical
+        ? divider.getBoundingClientRect().height
+        : divider.getBoundingClientRect().width;
+      var totalSize = (vertical
+        ? main.getBoundingClientRect().height
+        : main.getBoundingClientRect().width) - dividerSize;
+      var newChatSize = startSize + d;
 
-      var minPanel = 280;
-      if (newChatWidth < minPanel || (totalWidth - newChatWidth) < minPanel) return;
+      var minPanel = vertical ? 200 : 280;
+      if (newChatSize < minPanel || (totalSize - newChatSize) < minPanel) return;
 
-      var chatPercent = (newChatWidth / totalWidth) * 100;
-      var notebookPercent = 100 - chatPercent;
+      var chatPct = (newChatSize / totalSize) * 100;
+      var notebookPct = 100 - chatPct;
 
-      chatPanel.style.flex = '0 0 ' + chatPercent + '%';
-      notebookPanel.style.flex = '0 0 ' + notebookPercent + '%';
+      chatPanel.style.flex = '0 0 ' + chatPct + '%';
+      notebookPanel.style.flex = '0 0 ' + notebookPct + '%';
     }
 
     function onMouseUp() {
@@ -1185,33 +1220,47 @@
 
     divider.addEventListener('mousedown', onMouseDown);
 
-    // Touch support
     // Keyboard support for divider
     divider.addEventListener('keydown', function (e) {
       var step = 40;
-      var totalWidth = main.getBoundingClientRect().width - divider.getBoundingClientRect().width;
-      var chatWidth = chatPanel.getBoundingClientRect().width;
-      var minPanel = 280;
-      var newChatWidth;
+      var vertical = isVerticalLayout();
+      var keys = vertical ? ['ArrowUp', 'ArrowDown'] : ['ArrowLeft', 'ArrowRight'];
 
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      if (e.key === keys[0] || e.key === keys[1]) {
         e.preventDefault();
-        newChatWidth = chatWidth + (e.key === 'ArrowRight' ? step : -step);
-        if (newChatWidth < minPanel || (totalWidth - newChatWidth) < minPanel) return;
-        var chatPct = (newChatWidth / totalWidth) * 100;
+        var dividerSize = vertical
+          ? divider.getBoundingClientRect().height
+          : divider.getBoundingClientRect().width;
+        var totalSize = (vertical
+          ? main.getBoundingClientRect().height
+          : main.getBoundingClientRect().width) - dividerSize;
+        var chatSize = vertical
+          ? chatPanel.getBoundingClientRect().height
+          : chatPanel.getBoundingClientRect().width;
+        var minPanel = vertical ? 200 : 280;
+        var newChatSize = chatSize + (e.key === keys[1] ? step : -step);
+
+        if (newChatSize < minPanel || (totalSize - newChatSize) < minPanel) return;
+
+        var chatPct = (newChatSize / totalSize) * 100;
         var notebookPct = 100 - chatPct;
         chatPanel.style.flex = '0 0 ' + chatPct + '%';
         notebookPanel.style.flex = '0 0 ' + notebookPct + '%';
       }
     });
 
+    // Touch support
     divider.addEventListener('touchstart', function (e) {
       var touch = e.touches[0];
-      onMouseDown({ preventDefault: function () {}, clientX: touch.clientX });
+      onMouseDown({
+        preventDefault: function () {},
+        clientX: touch.clientX,
+        clientY: touch.clientY,
+      });
 
       function onTouchMove(ev) {
         var t = ev.touches[0];
-        onMouseMove({ clientX: t.clientX });
+        onMouseMove({ clientX: t.clientX, clientY: t.clientY });
       }
 
       function onTouchEnd() {
