@@ -18,7 +18,7 @@ Usage (as Flask blueprint -- future)::
 import logging
 from typing import Any
 
-from support_console.startup_template import DEFAULT_STARTUP, FLASK_STARTUP
+from support_console.startup_template import FLASK_STARTUP, render_startup
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ class SupportConsole:
             models_module=models_module,
         )
 
-        return DEFAULT_STARTUP.format(custom_startup=flask_startup)
+        return render_startup(flask_startup)
 
     def run(self, host: str = "0.0.0.0", port: int = 8888, **kwargs) -> None:
         """Start the support console server in standalone mode.

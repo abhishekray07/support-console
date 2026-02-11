@@ -7,6 +7,7 @@ Provides:
 - Static file serving for the web UI
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -15,7 +16,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -25,10 +26,30 @@ WS_MAX_MESSAGE_SIZE = 1024 * 1024  # 1 MB max per message
 WS_RATE_LIMIT_WINDOW = 5.0        # seconds
 WS_RATE_LIMIT_MAX = 20            # max messages per window
 
+UPLOAD_MAX_FILES = 5
+UPLOAD_RATE_LIMIT_WINDOW = 60.0  # 1 minute
+UPLOAD_RATE_LIMIT_MAX = 10       # max uploads per window
+
+# Static extension→MIME mapping for text files (don't trust client Content-Type)
+_TEXT_MIME_MAP: dict[str, str] = {
+    ".txt": "text/plain", ".log": "text/plain", ".csv": "text/csv",
+    ".json": "application/json", ".xml": "application/xml", ".yaml": "text/yaml",
+    ".py": "text/x-python", ".js": "text/javascript", ".ts": "text/typescript",
+    ".html": "text/html", ".css": "text/css", ".md": "text/markdown",
+    ".sh": "text/x-shellscript", ".sql": "text/x-sql",
+    ".toml": "text/plain", ".ini": "text/plain", ".cfg": "text/plain",
+    ".conf": "text/plain",
+}
+
 from support_console.chat import ChatEngine
+from support_console.file_store import (
+    FileStore, sanitize_filename, validate_file, detect_media_type,
+    ValidationError, MAX_FILE_SIZE, ALLOWED_IMAGE_EXTENSIONS,
+    ALLOWED_TEXT_EXTENSIONS,
+)
 from support_console.kernel import KernelSession, KernelError, ExecutionTimeout
 from support_console.sessions import SessionStore
-from support_console.startup_template import DEFAULT_STARTUP, FLASK_STARTUP
+from support_console.startup_template import render_startup
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +108,9 @@ class AppState:
         self.kernel: Optional[KernelSession] = None
         self.sessions: Optional[SessionStore] = None
         self.chat_engine: Optional[ChatEngine] = None
+        self.file_store: FileStore = FileStore()
+        self._cleanup_task: asyncio.Task | None = None
+        self._upload_rate: dict[str, list[float]] = {}  # IP -> list of timestamps
 
 
 def create_app(
@@ -118,7 +142,7 @@ def create_app(
         Defaults to all tools.
     """
     if startup_code is None:
-        startup_code = DEFAULT_STARTUP.format(custom_startup="")
+        startup_code = render_startup()
 
     state = AppState(
         app_root=app_root,
@@ -157,9 +181,31 @@ def create_app(
         except KernelError as exc:
             logger.warning("Kernel failed to start: %s", exc)
 
+        async def _cleanup_loop():
+            while True:
+                await asyncio.sleep(60)
+                state.file_store.cleanup_expired()
+                # Prune stale IPs from upload rate limiter
+                now = time.monotonic()
+                stale = [
+                    ip for ip, ts in state._upload_rate.items()
+                    if not ts or now - ts[-1] > UPLOAD_RATE_LIMIT_WINDOW
+                ]
+                for ip in stale:
+                    del state._upload_rate[ip]
+
+        state._cleanup_task = asyncio.create_task(_cleanup_loop())
+
         yield
 
         # Cleanup
+        if state._cleanup_task:
+            state._cleanup_task.cancel()
+            try:
+                await state._cleanup_task
+            except asyncio.CancelledError:
+                pass
+
         if state.kernel and state.kernel.is_alive:
             await state.kernel.shutdown()
         if state.sessions:
@@ -223,16 +269,55 @@ def create_app(
 
                 user_message = data.get("message", "")
                 history = data.get("messages", [])
+                file_ids = data.get("file_ids", [])
 
                 if not user_message:
                     await ws.send_json({"type": "error", "error": "Empty message"})
                     continue
 
+                # Validate file_ids count
+                if len(file_ids) > UPLOAD_MAX_FILES:
+                    await ws.send_json({
+                        "type": "error",
+                        "error": f"Too many files (max {UPLOAD_MAX_FILES})",
+                    })
+                    continue
+
+                # Resolve file IDs — two-phase: get-all first, then pop-all
+                # This prevents partial consumption if any ID is missing/expired.
+                # SAFETY: no `await` between phase 1 and phase 2, so the cleanup
+                # background task cannot run between them (single-threaded asyncio).
+                resolved_files = []
+                if file_ids:
+                    # Deduplicate while preserving order
+                    file_ids = list(dict.fromkeys(file_ids))
+
+                    # Phase 1: verify all IDs exist (non-destructive)
+                    all_valid = True
+                    for fid in file_ids:
+                        entry = app.state.console.file_store.get(fid)
+                        if entry is None:
+                            await ws.send_json({
+                                "type": "error",
+                                "error": "Attached files have expired. Please re-attach and resend.",
+                            })
+                            all_valid = False
+                            break
+
+                    if not all_valid:
+                        continue
+
+                    # Phase 2: all valid — now pop (consume) them
+                    for fid in file_ids:
+                        resolved_files.append(app.state.console.file_store.pop(fid))
+
                 # Build messages list from history + new message
                 messages = list(history)
                 messages.append({"role": "user", "content": user_message})
 
-                async for event in engine.chat_stream(messages):
+                async for event in engine.chat_stream(
+                    messages, files=resolved_files or None
+                ):
                     await ws.send_json(event)
 
                 # Send back the updated messages list so client can maintain history
@@ -250,6 +335,70 @@ def create_app(
                 await ws.close(code=1011)
             except Exception:
                 pass
+
+    # -----------------------------------------------------------------
+    # File upload endpoint
+    # -----------------------------------------------------------------
+
+    @app.post("/api/upload")
+    async def upload_files(request: Request, files: list[UploadFile] = File(...)):
+        """Upload files for attachment to chat messages."""
+        state = app.state.console
+
+        # CSRF check
+        if request.headers.get("X-Requested-With") != "XMLHttpRequest":
+            raise HTTPException(status_code=403, detail="Missing CSRF header")
+
+        # Rate limiting (per-IP, simple in-memory)
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.monotonic()
+        timestamps = state._upload_rate.setdefault(client_ip, [])
+        # Remove timestamps outside the window
+        timestamps[:] = [t for t in timestamps if now - t < UPLOAD_RATE_LIMIT_WINDOW]
+        if len(timestamps) >= UPLOAD_RATE_LIMIT_MAX:
+            raise HTTPException(status_code=429, detail="Upload rate limit exceeded")
+        timestamps.append(now)
+
+        if not files:
+            raise HTTPException(status_code=400, detail="No files provided")
+        if len(files) > UPLOAD_MAX_FILES:
+            raise HTTPException(status_code=400, detail=f"Too many files (max {UPLOAD_MAX_FILES})")
+
+        results = []
+        for upload in files:
+            data = await upload.read()
+            name = sanitize_filename(upload.filename or "unnamed")
+
+            try:
+                validate_file(name=name, data=data)
+            except ValidationError as exc:
+                status = 413 if "exceeds" in str(exc) else 415
+                raise HTTPException(status_code=status, detail=str(exc))
+
+            # Determine media type server-side (don't trust client Content-Type)
+            _, ext = os.path.splitext(name.lower())
+            if ext in ALLOWED_IMAGE_EXTENSIONS:
+                media_type = detect_media_type(data)
+            else:
+                media_type = _TEXT_MIME_MAP.get(ext, "application/octet-stream")
+
+            try:
+                entry = state.file_store.add(
+                    name=name,
+                    media_type=media_type,
+                    data=data,
+                )
+            except MemoryError as exc:
+                raise HTTPException(status_code=507, detail=str(exc))
+
+            results.append({
+                "id": entry.id,
+                "name": entry.name,
+                "type": entry.media_type,
+                "size": entry.size,
+            })
+
+        return {"files": results}
 
     # -----------------------------------------------------------------
     # Kernel endpoints

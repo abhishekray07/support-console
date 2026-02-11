@@ -3,7 +3,7 @@
 import pytest
 
 from support_console.integration import SupportConsole
-from support_console.startup_template import DEFAULT_STARTUP, FLASK_STARTUP
+from support_console.startup_template import DEFAULT_STARTUP, FLASK_STARTUP, render_startup
 
 
 class TestSupportConsole:
@@ -57,15 +57,33 @@ class TestSupportConsole:
         with pytest.raises(NotImplementedError):
             console.init_app(None)
 
+    def test_build_startup_code_no_format_error(self):
+        """Startup code generation doesn't crash on brace-containing output."""
+        mock_app = type("MockApp", (), {"__module__": "app.factory"})()
+        mock_db = type("MockDB", (), {})()
+
+        # This would raise KeyError with .format() because FLASK_STARTUP
+        # output contains brace literals like {db_var}
+        console = SupportConsole(mock_app, mock_db)
+        assert console._startup_code is not None
+        assert "Initializing Support Console kernel..." in console._startup_code
+
 
 class TestStartupTemplate:
     """Tests for startup template rendering."""
 
-    def test_default_startup_renders(self):
-        """DEFAULT_STARTUP template renders with custom_startup."""
-        result = DEFAULT_STARTUP.format(custom_startup="x = 42")
-        assert "x = 42" in result
+    def test_render_startup_with_braces(self):
+        """render_startup handles code containing braces."""
+        code = 'd = {"key": "value"}\nprint(d)'
+        result = render_startup(code)
+        assert 'd = {"key": "value"}' in result
         assert "Support Console" in result
+
+    def test_render_startup_empty(self):
+        """render_startup with no args produces the default template."""
+        result = render_startup()
+        assert "Initializing Support Console kernel..." in result
+        assert "Support Console ready." in result
 
     def test_flask_startup_renders(self):
         """FLASK_STARTUP template renders with all variables."""
