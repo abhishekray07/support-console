@@ -1,5 +1,6 @@
 """Tests for the chat module (tool implementations and helpers)."""
 
+import asyncio
 import os
 import pytest
 
@@ -273,6 +274,29 @@ class TestChatEngineInit:
                 app_root=sample_app_root,
                 allowed_tools=["Bash"],
             )
+
+
+class TestChatStreamCancellation:
+    """Tests for chat_stream cancellation via asyncio.Event."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_event_stops_stream(self, sample_app_root):
+        """Setting cancel_event stops chat_stream early with 'cancelled' stop_reason."""
+        engine = ChatEngine(api_key="sk-test-key", app_root=sample_app_root)
+        cancel = asyncio.Event()
+        # Set cancel immediately so it stops at the first check
+        cancel.set()
+
+        messages = [{"role": "user", "content": "hello"}]
+        events = []
+        async for event in engine.chat_stream(messages, cancel_event=cancel):
+            events.append(event)
+
+        # Should get a done/cancelled event without hitting the API
+        assert len(events) >= 1
+        last = events[-1]
+        assert last["type"] == "done"
+        assert last["stop_reason"] == "cancelled"
 
 
 import base64

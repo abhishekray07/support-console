@@ -12,6 +12,18 @@
   padding: 0;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 :root {
   /* Surface colors */
   --bg-primary: #0d1117;
@@ -384,6 +396,65 @@ html, body {
   color: var(--text-secondary);
 }
 
+/* --- Streaming State --- */
+
+.message-streaming {
+  border-left: 3px solid var(--accent-purple);
+  animation: streaming-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes streaming-pulse {
+  0%, 100% { border-left-color: var(--accent-purple); }
+  50% { border-left-color: rgba(188, 140, 255, 0.3); }
+}
+
+.message-streaming .message-content > :last-child::after {
+  content: '\2588';
+  animation: cursor-blink 0.8s step-end infinite;
+  color: var(--accent-purple);
+  font-weight: 400;
+  margin-left: 1px;
+}
+
+/* Don't show cursor on tool-usage or code-block elements */
+.message-streaming .message-content > .tool-usage::after,
+.message-streaming .message-content > .code-block-wrapper::after {
+  content: none;
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.streaming-pending {
+  white-space: pre-wrap;
+  color: var(--text-primary);
+}
+
+/* Smooth transition when streaming ends.
+   Use msg-assistant-border (not transparent) so non-streaming messages
+   retain their visual appearance -- just 2px wider on the left. */
+.message-assistant {
+  border-left: 3px solid var(--msg-assistant-border);
+  transition: border-left-color 0.4s ease-out;
+}
+
+/* Respect reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .message-streaming {
+    animation: none;
+    border-left-color: var(--accent-purple);
+  }
+  .message-streaming .message-content > :last-child::after {
+    animation: none;
+    opacity: 1;
+  }
+  .message {
+    animation: none;
+  }
+}
+
 .message-content {
   color: var(--text-primary);
   word-wrap: break-word;
@@ -601,15 +672,13 @@ html, body {
   border-radius: var(--radius-sm);
 }
 
-/* --- Streaming Indicator --- */
+/* --- Streaming Controls --- */
 
 .chat-streaming {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
-  color: var(--text-tertiary);
-  font-size: var(--font-size-sm);
+  justify-content: center;
+  padding: 8px 16px;
   flex-shrink: 0;
 }
 
@@ -617,30 +686,29 @@ html, body {
   display: none;
 }
 
-.streaming-dots {
-  display: flex;
-  gap: var(--space-1);
+.btn-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
 }
 
-.streaming-dots span {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--text-tertiary);
-  animation: streaming-bounce 1.2s ease-in-out infinite;
+.btn-stop:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--text-tertiary);
 }
 
-.streaming-dots span:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.streaming-dots span:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-@keyframes streaming-bounce {
-  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
-  30% { opacity: 1; transform: translateY(-3px); }
+.btn-stop:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
 }
 
 @keyframes cell-complete {

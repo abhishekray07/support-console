@@ -497,6 +497,7 @@ class ChatEngine:
 
     async def chat_stream(
         self, messages: list[dict], *, files: list[FileEntry] | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Stream a chat response, handling the full tool-use loop.
 
@@ -526,6 +527,11 @@ class ChatEngine:
         loop_count = 0
 
         while loop_count < MAX_TOOL_LOOPS:
+            # CHECK 1: Cancel before starting a new loop iteration
+            if cancel_event and cancel_event.is_set():
+                yield {"type": "done", "stop_reason": "cancelled", "message": None}
+                return
+
             loop_count += 1
 
             # --- Stream one API turn ---------------------------------
@@ -538,6 +544,10 @@ class ChatEngine:
                     messages=messages,
                 ) as stream:
                     async for event in stream:
+                        # CHECK 2: Cancel during streaming
+                        if cancel_event and cancel_event.is_set():
+                            break
+
                         # Yield text deltas for real-time display
                         if event.type == "content_block_delta":
                             if event.delta.type == "text_delta":
@@ -545,6 +555,11 @@ class ChatEngine:
                                     "type": "text",
                                     "content": event.delta.text,
                                 }
+
+                    # CHECK 3: If cancelled during streaming, don't call get_final_message
+                    if cancel_event and cancel_event.is_set():
+                        yield {"type": "done", "stop_reason": "cancelled", "message": None}
+                        return
 
                     response_message = await stream.get_final_message()
 
@@ -605,6 +620,18 @@ class ChatEngine:
             tool_results: list[dict] = []
 
             for tool_call in tool_uses:
+                # CHECK 4: Cancel before tool execution
+                if cancel_event and cancel_event.is_set():
+                    # Append synthetic cancelled tool result to keep history well-formed
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_call["id"],
+                        "content": "Cancelled by user",
+                    })
+                    messages.append({"role": "user", "content": tool_results})
+                    yield {"type": "done", "stop_reason": "cancelled", "message": None}
+                    return
+
                 yield {
                     "type": "tool_use",
                     "name": tool_call["name"],
