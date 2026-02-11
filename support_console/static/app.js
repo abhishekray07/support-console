@@ -49,6 +49,9 @@
     kernelBusy: false,
     kernelPollTimer: null,
 
+    // Render throttle
+    renderPending: false,
+
     // Divider drag
     isDragging: false,
   };
@@ -270,8 +273,17 @@
     }
 
     state.currentAssistantContent += data.content;
-    renderAssistantContent(state.currentAssistantEl, state.currentAssistantContent);
-    autoScrollChat();
+
+    if (!state.renderPending) {
+      state.renderPending = true;
+      requestAnimationFrame(function () {
+        state.renderPending = false;
+        if (state.currentAssistantEl) {
+          renderAssistantContent(state.currentAssistantEl, state.currentAssistantContent);
+          autoScrollChat();
+        }
+      });
+    }
   }
 
   function handleToolUseEvent(data) {
