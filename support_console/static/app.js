@@ -77,6 +77,7 @@
     dom.addCell = document.getElementById('add-cell');
     dom.clearNotebook = document.getElementById('clear-notebook');
     dom.reconnectingOverlay = document.getElementById('reconnecting-overlay');
+    dom.chatAnnounce = document.getElementById('chat-announce');
     dom.main = document.getElementById('main');
   }
 
@@ -331,6 +332,9 @@
   }
 
   function handleDoneEvent(_data) {
+    if (dom.chatAnnounce) {
+      dom.chatAnnounce.textContent = 'Assistant response complete.';
+    }
     state.isStreaming = false;
     state.currentAssistantEl = null;
     state.currentAssistantContent = '';
@@ -369,6 +373,9 @@
 
   function createUserMessage(text) {
     clearWelcome();
+    if (dom.chatAnnounce) {
+      dom.chatAnnounce.textContent = 'Message sent.';
+    }
     const el = document.createElement('div');
     el.className = 'message message-user';
 

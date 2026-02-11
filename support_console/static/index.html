@@ -47,7 +47,7 @@
         <span class="panel-title">Chat</span>
       </div>
 
-      <div id="chat-messages" class="chat-messages" role="log" aria-live="polite" aria-label="Chat messages">
+      <div id="chat-messages" class="chat-messages" role="log" aria-label="Chat messages">
         <!-- Messages will be rendered here -->
         <div class="chat-welcome">
           <p>Welcome to Support Console. Type a message to begin.</p>
@@ -61,6 +61,8 @@
         </div>
         <span class="streaming-label">Assistant is responding...</span>
       </div>
+
+      <div id="chat-announce" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 
       <div id="chat-input-area" class="chat-input-area">
         <textarea
