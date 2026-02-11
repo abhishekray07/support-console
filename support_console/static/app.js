@@ -998,7 +998,7 @@
 
     var runBtn = document.createElement('button');
     runBtn.className = 'cell-btn cell-btn-run';
-    runBtn.title = 'Run cell (Ctrl+Enter)';
+    runBtn.title = 'Run cell (Shift+Enter)';
     runBtn.dataset.action = 'run';
     runBtn.textContent = '\u25B6'; // play triangle
     actions.appendChild(runBtn);
@@ -1321,8 +1321,8 @@
       textarea.dispatchEvent(new Event('input'));
     }
 
-    // Ctrl/Cmd + Enter to run cell
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    // Ctrl/Cmd + Enter or Shift + Enter to run cell
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || e.shiftKey)) {
       e.preventDefault();
       var cellEl = textarea.closest('.cell');
       if (cellEl) {
