@@ -396,6 +396,11 @@ html, body {
   50% { opacity: 0; }
 }
 
+.streaming-pending {
+  white-space: pre-wrap;
+  color: var(--text-primary);
+}
+
 /* Smooth transition when streaming ends.
    Use msg-assistant-border (not transparent) so non-streaming messages
    retain their visual appearance -- just 2px wider on the left. */

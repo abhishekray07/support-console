@@ -156,6 +156,31 @@
     return 'id-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
   }
 
+  function isInsideCodeFence(text) {
+    var lines = text.split('\n');
+    var insideFence = false;
+    var fenceChar = '';
+    var fenceLen = 0;
+
+    for (var i = 0; i < lines.length; i++) {
+      var trimmed = lines[i].trimStart();
+      if (!insideFence) {
+        var openMatch = trimmed.match(/^(`{3,}|~{3,})/);
+        if (openMatch) {
+          insideFence = true;
+          fenceChar = openMatch[1][0];
+          fenceLen = openMatch[1].length;
+        }
+      } else {
+        var closeMatch = trimmed.match(/^(`{3,}|~{3,})\s*$/);
+        if (closeMatch && closeMatch[1][0] === fenceChar && closeMatch[1].length >= fenceLen) {
+          insideFence = false;
+        }
+      }
+    }
+    return insideFence;
+  }
+
   // --------------------------------------------------------
   // WebSocket Connection
   // --------------------------------------------------------
@@ -267,13 +292,25 @@
   }
 
   function handleTextEvent(data) {
+    // Guard: discard late-arriving text events after cancel/stop
+    if (!state.isStreaming) return;
+
     if (!state.currentAssistantEl) {
       state.currentAssistantEl = createAssistantMessage();
       state.currentAssistantContent = '';
     }
 
     state.currentAssistantContent += data.content;
-    renderAssistantContent(state.currentAssistantEl, state.currentAssistantContent);
+
+    // Only do a full markdown re-render at paragraph boundaries
+    var atBoundary = !isInsideCodeFence(state.currentAssistantContent)
+      && state.currentAssistantContent.endsWith('\n\n');
+
+    if (atBoundary) {
+      renderAssistantContent(state.currentAssistantEl, state.currentAssistantContent);
+    } else {
+      updatePendingText(state.currentAssistantEl, state.currentAssistantContent);
+    }
     autoScrollChat();
   }
 
@@ -321,18 +358,32 @@
     createCell(data.code, data.language || 'python');
   }
 
-  function handleDoneEvent(_data) {
+  function finalizeStreaming() {
+    // Flush any remaining pending text as rendered markdown
+    if (state.currentAssistantEl && state.currentAssistantContent) {
+      renderAssistantContent(state.currentAssistantEl, state.currentAssistantContent);
+    }
+    // Remove empty pre-created assistant message if no content was received
     if (state.currentAssistantEl) {
-      state.currentAssistantEl.classList.remove('message-streaming');
+      var contentEl = state.currentAssistantEl.querySelector('.message-content');
+      if (contentEl && contentEl.textContent.trim() === '' && !contentEl.querySelector('.tool-usage')) {
+        state.currentAssistantEl.remove();
+      } else {
+        state.currentAssistantEl.classList.remove('message-streaming');
+      }
     }
     state.isStreaming = false;
     state.currentAssistantEl = null;
     state.currentAssistantContent = '';
     dom.chatStreaming.classList.add('hidden');
-    dom.chatSrStatus.textContent = 'Response complete';
     dom.chatInput.disabled = false;
     dom.chatSend.disabled = false;
     dom.chatInput.focus();
+  }
+
+  function handleDoneEvent(_data) {
+    finalizeStreaming();
+    dom.chatSrStatus.textContent = 'Response complete';
   }
 
   function handleHistoryUpdate(data) {
@@ -342,18 +393,9 @@
   }
 
   function handleErrorEvent(data) {
-    if (state.currentAssistantEl) {
-      state.currentAssistantEl.classList.remove('message-streaming');
-    }
-    state.isStreaming = false;
-    state.currentAssistantEl = null;
-    state.currentAssistantContent = '';
-    dom.chatStreaming.classList.add('hidden');
-    dom.chatSrStatus.textContent = 'Response error';
-    dom.chatInput.disabled = false;
-    dom.chatSend.disabled = false;
-
+    finalizeStreaming();
     appendSystemMessage('Error: ' + (data.error || 'Unknown error'), 'error');
+    dom.chatSrStatus.textContent = 'Response error';
     autoScrollChat();
   }
 
@@ -408,33 +450,56 @@
   }
 
   function renderAssistantContent(msgEl, markdownText) {
-    const contentEl = msgEl.querySelector('.message-content');
+    var contentEl = msgEl.querySelector('.message-content');
 
     // Preserve any tool-usage elements that were inserted
-    const toolElements = contentEl.querySelectorAll('.tool-usage');
-    const savedTools = [];
-    for (let i = 0; i < toolElements.length; i++) {
+    var toolElements = contentEl.querySelectorAll('.tool-usage');
+    var savedTools = [];
+    for (var i = 0; i < toolElements.length; i++) {
       savedTools.push(toolElements[i]);
     }
-
-    // Temporarily detach tool elements so they are not destroyed
     savedTools.forEach(function (t) { t.remove(); });
 
-    // Render markdown using marked.js (trusted server content)
-    // marked.parse output contains highlight.js syntax-highlighted code
+    // Remove pending text span (will be recreated if needed)
+    var pendingEl = contentEl.querySelector('.streaming-pending');
+    if (pendingEl) pendingEl.remove();
+
+    // Render markdown using marked.js (trusted server content, see file header)
     try {
       contentEl.innerHTML = marked.parse(markdownText); // eslint-disable-line no-unsanitized/property
     } catch (e) {
       contentEl.textContent = markdownText;
     }
 
-    // Wire up code block action buttons via event delegation
+    // Track how much text has been rendered as markdown
+    contentEl.dataset.renderedLen = String(markdownText.length);
+
     wireCodeBlockButtons(contentEl);
 
     // Re-append tool elements
     savedTools.forEach(function (t) {
       contentEl.appendChild(t);
     });
+  }
+
+  function updatePendingText(msgEl, fullText) {
+    var contentEl = msgEl.querySelector('.message-content');
+    var pendingEl = contentEl.querySelector('.streaming-pending');
+
+    // Find the text that hasn't been rendered as markdown yet
+    // We store the last-rendered length as a data attribute
+    var renderedLen = parseInt(contentEl.dataset.renderedLen || '0', 10);
+    var pendingText = fullText.slice(renderedLen);
+
+    if (!pendingEl) {
+      pendingEl = document.createElement('span');
+      pendingEl.className = 'streaming-pending';
+      contentEl.appendChild(pendingEl);
+    }
+
+    // Move pending span to end (after tool elements)
+    contentEl.appendChild(pendingEl);
+    pendingEl.textContent = pendingText;
   }
 
   function wireCodeBlockButtons(container) {
