@@ -21,6 +21,8 @@
     kernelPollInterval: 10000,
     chatAutoScrollThreshold: 80,
     maxInputHeight: 160,
+    autocompleteDebounceMs: 150,
+    autocompleteMaxItems: 20,
     maxFileSize: 10 * 1024 * 1024,
     maxFiles: 5,
     allowedImageTypes: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
@@ -65,6 +67,19 @@
     // Divider drag
     isDragging: false,
 
+    // Autocomplete
+    autocomplete: {
+      visible: false,
+      matches: [],
+      selectedIndex: 0,
+      cursorStart: 0,
+      cursorEnd: 0,
+      textarea: null,
+      debounceTimer: null,
+      requestId: 0,
+      isInserting: false,
+    },
+
     // File uploads
     pendingFiles: [],
     isUploading: false,
@@ -101,6 +116,13 @@
     dom.attachmentPreview = document.getElementById('attachment-preview');
     dom.dropOverlay = document.getElementById('drop-overlay');
     dom.fileAnnounce = document.getElementById('file-announce');
+
+    // Create shared autocomplete dropdown
+    dom.autocompleteDropdown = document.createElement('div');
+    dom.autocompleteDropdown.className = 'autocomplete-dropdown';
+    dom.autocompleteDropdown.id = 'autocomplete-dropdown';
+    dom.autocompleteDropdown.setAttribute('role', 'listbox');
+    document.body.appendChild(dom.autocompleteDropdown);
   }
 
   // --------------------------------------------------------
@@ -1040,6 +1062,7 @@
     // Wire up textarea events
     textarea.addEventListener('keydown', handleCellTextareaKeydown);
     textarea.addEventListener('input', autosizeCellTextarea);
+    textarea.addEventListener('input', handleCellTextareaInput);
 
     // Initial autosize
     requestAnimationFrame(function () {
@@ -1287,7 +1310,31 @@
   function handleCellTextareaKeydown(e) {
     var textarea = e.target;
 
-    // Tab key inserts spaces instead of moving focus
+    // --- Autocomplete keyboard navigation (when dropdown is visible) ---
+    if (state.autocomplete.visible) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        autocompleteNavigate(1);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        autocompleteNavigate(-1);
+        return;
+      }
+      if (e.key === 'Enter' || (e.key === 'Tab' && !e.shiftKey)) {
+        e.preventDefault();
+        autocompleteAccept();
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        autocompleteDismiss();
+        return;
+      }
+    }
+
+    // Tab key — autocomplete or indent
     if (e.key === 'Tab') {
       e.preventDefault();
       var start = textarea.selectionStart;
@@ -1312,7 +1359,14 @@
           textarea.selectionStart = textarea.selectionEnd = start - removed;
         }
       } else {
-        // Insert 4 spaces (soft tab)
+        // Check if there's a partial identifier before cursor → trigger autocomplete
+        var word = getWordBeforeCursor(textarea);
+        if (word.length > 0) {
+          triggerAutocomplete(textarea);
+          return;
+        }
+
+        // Otherwise insert 4 spaces (soft tab)
         textarea.value = textarea.value.substring(0, start) + '    ' + textarea.value.substring(end);
         textarea.selectionStart = textarea.selectionEnd = start + 4;
       }
@@ -1335,6 +1389,285 @@
     var textarea = this;
     textarea.style.height = 'auto';
     textarea.style.height = Math.max(60, textarea.scrollHeight) + 'px';
+  }
+
+  // --------------------------------------------------------
+  // Autocomplete
+  // --------------------------------------------------------
+
+  function getWordBeforeCursor(textarea) {
+    var val = textarea.value;
+    var pos = textarea.selectionStart;
+    var i = pos - 1;
+    while (i >= 0 && /[a-zA-Z0-9_.]/.test(val[i])) {
+      i--;
+    }
+    return val.substring(i + 1, pos);
+  }
+
+  function handleCellTextareaInput(e) {
+    var textarea = e.target;
+
+    // Guard: skip when autocompleteAccept is modifying the textarea value
+    if (state.autocomplete.isInserting) return;
+
+    var pos = textarea.selectionStart;
+    var charBefore = pos > 0 ? textarea.value[pos - 1] : '';
+
+    // Dot after an identifier char → trigger autocomplete (debounced)
+    if (charBefore === '.' && pos > 1 && /[a-zA-Z0-9_)]/.test(textarea.value[pos - 2])) {
+      debouncedAutocomplete(textarea);
+      return;
+    }
+
+    // If dropdown visible and user keeps typing identifier chars → re-trigger
+    if (state.autocomplete.visible && /[a-zA-Z0-9_]/.test(charBefore)) {
+      debouncedAutocomplete(textarea);
+      return;
+    }
+
+    // If dropdown visible and user types a non-identifier char → dismiss
+    if (state.autocomplete.visible) {
+      autocompleteDismiss();
+    }
+  }
+
+  function debouncedAutocomplete(textarea) {
+    if (state.autocomplete.debounceTimer) {
+      clearTimeout(state.autocomplete.debounceTimer);
+    }
+    state.autocomplete.debounceTimer = setTimeout(function () {
+      state.autocomplete.debounceTimer = null;
+      triggerAutocomplete(textarea);
+    }, CONFIG.autocompleteDebounceMs);
+  }
+
+  function triggerAutocomplete(textarea) {
+    var code = textarea.value;
+    var cursorPos = textarea.selectionStart;
+
+    state.autocomplete.requestId++;
+    var myRequestId = state.autocomplete.requestId;
+
+    fetch('/api/kernel/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code, cursor_pos: cursorPos }),
+    })
+      .then(function (resp) { return resp.json(); })
+      .then(function (data) {
+        // Discard stale responses
+        if (myRequestId !== state.autocomplete.requestId) return;
+
+        var matches = (data.matches || []).slice(0, CONFIG.autocompleteMaxItems);
+        if (matches.length === 0) {
+          autocompleteDismiss();
+          return;
+        }
+
+        state.autocomplete.matches = matches;
+        state.autocomplete.cursorStart = data.cursor_start;
+        state.autocomplete.cursorEnd = data.cursor_end;
+        state.autocomplete.textarea = textarea;
+        state.autocomplete.selectedIndex = 0;
+
+        showAutocompleteDropdown(textarea, matches);
+      })
+      .catch(function () {
+        autocompleteDismiss();
+      });
+  }
+
+  function getCaretCoordinates(textarea, position) {
+    var div = document.createElement('div');
+    var style = window.getComputedStyle(textarea);
+    var properties = [
+      'fontFamily', 'fontSize', 'fontWeight', 'fontStyle',
+      'letterSpacing', 'textTransform', 'wordSpacing', 'textIndent',
+      'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+      'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
+      'lineHeight', 'tabSize',
+    ];
+
+    div.style.position = 'absolute';
+    div.style.top = '-9999px';
+    div.style.left = '-9999px';
+    div.style.whiteSpace = 'pre-wrap';
+    div.style.wordWrap = 'break-word';
+    div.style.overflow = 'hidden';
+    div.style.width = style.width;
+
+    for (var i = 0; i < properties.length; i++) {
+      div.style[properties[i]] = style[properties[i]];
+    }
+
+    var textBefore = textarea.value.substring(0, position);
+    var textNode = document.createTextNode(textBefore);
+    div.appendChild(textNode);
+
+    var marker = document.createElement('span');
+    marker.textContent = '|';
+    div.appendChild(marker);
+
+    document.body.appendChild(div);
+
+    var markerRect = marker.offsetTop;
+    var markerLeft = marker.offsetLeft;
+    var markerHeight = marker.offsetHeight;
+
+    // Account for textarea scroll
+    var top = markerRect - textarea.scrollTop;
+    var left = markerLeft - textarea.scrollLeft;
+
+    document.body.removeChild(div);
+
+    return { top: top, left: left, height: markerHeight };
+  }
+
+  function showAutocompleteDropdown(textarea, matches) {
+    var dropdown = dom.autocompleteDropdown;
+
+    // Clear previous items
+    while (dropdown.firstChild) {
+      dropdown.removeChild(dropdown.firstChild);
+    }
+
+    for (var i = 0; i < matches.length; i++) {
+      var item = document.createElement('div');
+      var itemId = 'autocomplete-item-' + i;
+      item.className = 'autocomplete-item' + (i === 0 ? ' selected' : '');
+      item.id = itemId;
+      item.textContent = matches[i];
+      item.dataset.index = i;
+      item.setAttribute('role', 'option');
+      if (i === 0) item.setAttribute('aria-selected', 'true');
+      item.addEventListener('mousedown', onAutocompleteItemMousedown);
+      dropdown.appendChild(item);
+    }
+
+    // Set ARIA attributes on the textarea
+    textarea.setAttribute('aria-haspopup', 'listbox');
+    textarea.setAttribute('aria-expanded', 'true');
+    textarea.setAttribute('aria-controls', 'autocomplete-dropdown');
+    textarea.setAttribute('aria-activedescendant', 'autocomplete-item-0');
+
+    // Position the dropdown below the cursor
+    var caretCoords = getCaretCoordinates(textarea, textarea.selectionStart);
+    var textareaRect = textarea.getBoundingClientRect();
+
+    var top = textareaRect.top + caretCoords.top + caretCoords.height + 2;
+    var left = textareaRect.left + caretCoords.left;
+
+    dropdown.style.top = top + 'px';
+    dropdown.style.left = left + 'px';
+    dropdown.classList.add('visible');
+
+    // Flip above if overflows bottom
+    var dropdownRect = dropdown.getBoundingClientRect();
+    if (dropdownRect.bottom > window.innerHeight) {
+      var flippedTop = textareaRect.top + caretCoords.top - dropdownRect.height - 2;
+      if (flippedTop >= 0) {
+        dropdown.style.top = flippedTop + 'px';
+      }
+    }
+
+    // Clamp to right edge
+    dropdownRect = dropdown.getBoundingClientRect();
+    if (dropdownRect.right > window.innerWidth) {
+      dropdown.style.left = Math.max(0, window.innerWidth - dropdownRect.width - 4) + 'px';
+    }
+
+    state.autocomplete.visible = true;
+  }
+
+  function onAutocompleteItemMousedown(e) {
+    e.preventDefault();
+    var index = parseInt(e.currentTarget.dataset.index, 10);
+    state.autocomplete.selectedIndex = index;
+    autocompleteAccept();
+  }
+
+  function autocompleteNavigate(delta) {
+    var ac = state.autocomplete;
+    var count = ac.matches.length;
+    if (count === 0) return;
+
+    ac.selectedIndex = (ac.selectedIndex + delta + count) % count;
+
+    var items = dom.autocompleteDropdown.querySelectorAll('.autocomplete-item');
+    for (var i = 0; i < items.length; i++) {
+      if (i === ac.selectedIndex) {
+        items[i].classList.add('selected');
+        items[i].setAttribute('aria-selected', 'true');
+        // Scroll into view
+        items[i].scrollIntoView({ block: 'nearest' });
+      } else {
+        items[i].classList.remove('selected');
+        items[i].removeAttribute('aria-selected');
+      }
+    }
+
+    // Update aria-activedescendant on the textarea
+    if (ac.textarea) {
+      ac.textarea.setAttribute('aria-activedescendant', 'autocomplete-item-' + ac.selectedIndex);
+    }
+  }
+
+  function autocompleteAccept() {
+    var ac = state.autocomplete;
+    if (!ac.visible || ac.matches.length === 0) return;
+
+    var textarea = ac.textarea;
+    var match = ac.matches[ac.selectedIndex];
+    var val = textarea.value;
+
+    ac.isInserting = true;
+
+    textarea.value = val.substring(0, ac.cursorStart) + match + val.substring(ac.cursorEnd);
+    var newPos = ac.cursorStart + match.length;
+    textarea.selectionStart = textarea.selectionEnd = newPos;
+
+    // Trigger input event for autosize
+    textarea.dispatchEvent(new Event('input'));
+
+    ac.isInserting = false;
+
+    autocompleteDismiss();
+    textarea.focus();
+  }
+
+  function autocompleteDismiss() {
+    // Clear ARIA attributes from the textarea
+    if (state.autocomplete.textarea) {
+      state.autocomplete.textarea.setAttribute('aria-expanded', 'false');
+      state.autocomplete.textarea.removeAttribute('aria-activedescendant');
+    }
+
+    state.autocomplete.visible = false;
+    state.autocomplete.matches = [];
+    state.autocomplete.selectedIndex = 0;
+    state.autocomplete.textarea = null;
+    dom.autocompleteDropdown.classList.remove('visible');
+
+    if (state.autocomplete.debounceTimer) {
+      clearTimeout(state.autocomplete.debounceTimer);
+      state.autocomplete.debounceTimer = null;
+    }
+  }
+
+  function setupAutocompleteDismiss() {
+    document.addEventListener('mousedown', function (e) {
+      if (!state.autocomplete.visible) return;
+      if (dom.autocompleteDropdown.contains(e.target)) return;
+      if (state.autocomplete.textarea && state.autocomplete.textarea === e.target) return;
+      autocompleteDismiss();
+    });
+
+    dom.notebookCells.addEventListener('scroll', function () {
+      if (state.autocomplete.visible) {
+        autocompleteDismiss();
+      }
+    });
   }
 
   // --------------------------------------------------------
@@ -1760,6 +2093,7 @@
     setupFileUpload();
     setupNotebookControls();
     setupDivider();
+    setupAutocompleteDismiss();
     connectWebSocket();
     startKernelPolling();
   }

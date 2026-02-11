@@ -1403,6 +1403,46 @@ html, body {
 
 /* --- Responsive tweaks for very small screens --- */
 
+/* --- Autocomplete Dropdown --- */
+
+.autocomplete-dropdown {
+  position: fixed;
+  z-index: 500;
+  min-width: 200px;
+  max-width: 400px;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  display: none;
+}
+
+.autocomplete-dropdown.visible {
+  display: block;
+}
+
+.autocomplete-item {
+  padding: 4px 10px;
+  cursor: pointer;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.autocomplete-item:hover {
+  background: var(--bg-hover);
+}
+
+.autocomplete-item.selected {
+  background: var(--accent-blue);
+  color: #fff;
+}
+
 @media (max-width: 700px) {
   #main {
     flex-direction: column;

@@ -111,6 +111,35 @@ class TestKernelEndpoints:
         data = resp.json()
         assert "output" in data
 
+    async def test_kernel_complete(self, app_with_client):
+        app, client = app_with_client
+        kernel = app.state.console.kernel
+        kernel.complete = AsyncMock(return_value={
+            "matches": ["path", "pathsep"],
+            "cursor_start": 3,
+            "cursor_end": 5,
+            "metadata": {},
+            "status": "ok",
+        })
+        resp = await client.post("/api/kernel/complete", json={"code": "os.pa", "cursor_pos": 5})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "path" in data["matches"]
+        assert data["status"] == "ok"
+        kernel.complete.assert_called_once_with("os.pa", 5)
+
+    async def test_kernel_complete_when_dead(self, app_with_client):
+        app, client = app_with_client
+        kernel = app.state.console.kernel
+        kernel.is_alive = False
+        resp = await client.post("/api/kernel/complete", json={"code": "os.pa", "cursor_pos": 5})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["matches"] == []
+        assert data["cursor_start"] == 5
+        assert data["cursor_end"] == 5
+        assert data["status"] == "ok"
+
 
 class TestSessionEndpoints:
     """Tests for session API endpoints."""
