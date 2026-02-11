@@ -15,7 +15,7 @@
 :root {
   /* Surface colors */
   --bg-primary: #0d1117;
-  --bg-secondary: #161b22;
+  --bg-secondary: #1a1f28;
   --bg-tertiary: #1c2128;
   --bg-elevated: #21262d;
   --bg-hover: #292e36;
@@ -74,6 +74,11 @@
   --space-8: 32px;
   --space-12: 48px;
 
+  /* Z-index scale */
+  --z-divider: 10;
+  --z-header: 50;
+  --z-overlay: 100;
+
   /* Font */
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   --font-mono: 'SF Mono', 'Fira Code', 'Fira Mono', 'Roboto Mono', 'Consolas', 'Courier New', monospace;
@@ -115,6 +120,12 @@ html, body {
   background: var(--bg-active);
 }
 
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-elevated) transparent;
+}
+
 /* --- Header --- */
 
 #header {
@@ -126,7 +137,7 @@ html, body {
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-primary);
   flex-shrink: 0;
-  z-index: 100;
+  z-index: var(--z-header);
 }
 
 .header-left h1 {
@@ -165,17 +176,17 @@ html, body {
 
 .status-connected .status-dot {
   background: var(--accent-green);
-  box-shadow: 0 0 6px rgba(63, 185, 80, 0.4);
+  box-shadow: 0 0 4px rgba(63, 185, 80, 0.25);
 }
 
 .status-disconnected .status-dot {
   background: var(--accent-red);
-  box-shadow: 0 0 6px rgba(248, 81, 73, 0.4);
+  box-shadow: 0 0 4px rgba(248, 81, 73, 0.25);
 }
 
 .status-reconnecting .status-dot {
   background: var(--accent-orange);
-  box-shadow: 0 0 6px rgba(210, 153, 34, 0.4);
+  box-shadow: 0 0 4px rgba(210, 153, 34, 0.25);
   animation: pulse-dot 1.2s ease-in-out infinite;
 }
 
@@ -185,17 +196,17 @@ html, body {
 
 .status-alive .status-dot {
   background: var(--accent-green);
-  box-shadow: 0 0 6px rgba(63, 185, 80, 0.4);
+  box-shadow: 0 0 4px rgba(63, 185, 80, 0.25);
 }
 
 .status-dead .status-dot {
   background: var(--accent-red);
-  box-shadow: 0 0 6px rgba(248, 81, 73, 0.4);
+  box-shadow: 0 0 4px rgba(248, 81, 73, 0.25);
 }
 
 .status-busy .status-dot {
   background: var(--accent-orange);
-  box-shadow: 0 0 6px rgba(210, 153, 34, 0.4);
+  box-shadow: 0 0 4px rgba(210, 153, 34, 0.25);
   animation: pulse-dot 1.2s ease-in-out infinite;
 }
 
@@ -258,7 +269,7 @@ html, body {
   flex-shrink: 0;
   position: relative;
   transition: background 0.15s;
-  z-index: 10;
+  z-index: var(--z-divider);
 }
 
 .divider:hover,
@@ -477,11 +488,11 @@ html, body {
   gap: var(--space-2);
 }
 
-.code-block-wrapper pre {
+.message-content .code-block-wrapper pre {
   margin: 0;
   padding: var(--space-3);
   overflow-x: auto;
-  background: var(--bg-primary) !important;
+  background: var(--bg-primary);
 }
 
 .code-block-wrapper pre code {
@@ -625,6 +636,16 @@ html, body {
   30% { opacity: 1; transform: translateY(-3px); }
 }
 
+@keyframes cell-complete {
+  0% { box-shadow: 0 0 0 2px var(--cell-done); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+@keyframes cell-error-flash {
+  0% { box-shadow: 0 0 0 2px var(--cell-error); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
 /* --- Chat Input Area --- */
 
 .chat-input-area {
@@ -694,6 +715,7 @@ html, body {
 
 .btn:active {
   background: var(--bg-active);
+  transform: scale(0.97);
 }
 
 .btn:focus-visible {
@@ -830,10 +852,12 @@ html, body {
 
 .cell.cell-done {
   border-color: var(--cell-done);
+  animation: cell-complete 0.5s ease-out;
 }
 
 .cell.cell-error {
   border-color: var(--cell-error);
+  animation: cell-error-flash 0.5s ease-out;
 }
 
 .cell-header {
@@ -899,6 +923,10 @@ html, body {
 .cell-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+.cell-btn:active {
+  transform: scale(0.92);
 }
 
 .cell-btn:focus-visible {
@@ -1033,7 +1061,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: var(--z-overlay);
 }
 
 .reconnecting-overlay.hidden {
