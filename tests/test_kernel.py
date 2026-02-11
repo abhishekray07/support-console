@@ -187,3 +187,42 @@ async def test_stderr_capture(kernel):
     """Stderr output is captured separately."""
     result = await kernel.execute('import sys; print("error msg", file=sys.stderr)')
     assert "error msg" in result["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_complete_basic(kernel):
+    """Complete returns matches from Jedi via the kernel."""
+    await kernel.execute("import os")
+    result = await kernel.complete("os.pa", cursor_pos=5)
+    assert result["status"] == "ok"
+    assert "path" in result["matches"]
+
+
+@pytest.mark.asyncio
+async def test_complete_empty(kernel):
+    """Complete with nonsense returns empty matches."""
+    result = await kernel.complete("xyzzynonexistent.qqq", cursor_pos=20)
+    assert result["status"] == "ok"
+    assert result["matches"] == []
+
+
+@pytest.mark.asyncio
+async def test_complete_before_start():
+    """Complete raises KernelNotStartedError if kernel not started."""
+    k = KernelSession()
+    with pytest.raises(KernelNotStartedError):
+        await k.complete("os.pa", cursor_pos=5)
+
+
+@pytest.mark.asyncio
+async def test_complete_when_busy(kernel):
+    """Complete returns empty matches when kernel is busy executing."""
+    kernel._busy = True
+    try:
+        result = await kernel.complete("os.pa", cursor_pos=5)
+        assert result["status"] == "ok"
+        assert result["matches"] == []
+        assert result["cursor_start"] == 5
+        assert result["cursor_end"] == 5
+    finally:
+        kernel._busy = False

@@ -18,7 +18,7 @@ from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # WebSocket safety limits
 WS_MAX_MESSAGE_SIZE = 1024 * 1024  # 1 MB max per message
@@ -47,6 +47,11 @@ class ExecuteRequest(BaseModel):
     def clamped_timeout(self) -> float:
         """Return timeout clamped to a safe range (1-300 seconds)."""
         return max(1.0, min(self.timeout, 300.0))
+
+
+class CompleteRequest(BaseModel):
+    code: str
+    cursor_pos: int = Field(ge=0)
 
 
 class SessionCreateRequest(BaseModel):
@@ -269,6 +274,31 @@ def create_app(
             raise HTTPException(status_code=408, detail="Execution timed out")
         except KernelError as exc:
             raise HTTPException(status_code=500, detail=str(exc))
+
+    @app.post("/api/kernel/complete")
+    async def kernel_complete(req: CompleteRequest):
+        """Request code completions from the IPython kernel."""
+        kernel = app.state.console.kernel
+        if kernel is None or not kernel.is_alive:
+            return {
+                "matches": [],
+                "cursor_start": req.cursor_pos,
+                "cursor_end": req.cursor_pos,
+                "metadata": {},
+                "status": "ok",
+            }
+
+        try:
+            result = await kernel.complete(req.code, req.cursor_pos)
+            return result
+        except Exception:
+            return {
+                "matches": [],
+                "cursor_start": req.cursor_pos,
+                "cursor_end": req.cursor_pos,
+                "metadata": {},
+                "status": "ok",
+            }
 
     @app.post("/api/kernel/interrupt")
     async def kernel_interrupt():

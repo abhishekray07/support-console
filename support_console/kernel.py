@@ -241,6 +241,67 @@ class KernelSession:
             logger.warning("Failed to interrupt kernel %s", self._session_id, exc_info=True)
             return False
 
+    async def complete(self, code: str, cursor_pos: int, timeout: float = 3.0) -> dict:
+        """Request code completions from the kernel.
+
+        Args:
+            code: The code context to complete in.
+            cursor_pos: Cursor position (character offset) in *code*.
+            timeout: Maximum seconds to wait for a reply.
+
+        Returns:
+            Dictionary with keys: matches, cursor_start, cursor_end, metadata, status.
+
+        Raises:
+            KernelNotStartedError: If the kernel is not running.
+        """
+        self._ensure_started()
+
+        empty = {
+            "matches": [],
+            "cursor_start": cursor_pos,
+            "cursor_end": cursor_pos,
+            "metadata": {},
+            "status": "ok",
+        }
+
+        # Guard: ZMQ sockets are not thread-safe. If an execution is in
+        # progress we must not touch the shell channel concurrently.
+        if self._busy:
+            return empty
+
+        try:
+            kc = self._kc
+            msg_id = await asyncio.to_thread(kc.complete, code, cursor_pos)
+
+            # Drain shell channel until we find the matching complete_reply.
+            deadline = time.monotonic() + timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return empty
+                poll_timeout = min(remaining, 0.5)
+                try:
+                    reply = await asyncio.to_thread(
+                        kc.get_shell_msg, timeout=poll_timeout
+                    )
+                except Exception:
+                    continue
+                if reply.get("parent_header", {}).get("msg_id") == msg_id:
+                    break
+
+            content = reply.get("content", {})
+            return {
+                "matches": content.get("matches", []),
+                "cursor_start": content.get("cursor_start", cursor_pos),
+                "cursor_end": content.get("cursor_end", cursor_pos),
+                "metadata": content.get("metadata", {}),
+                "status": content.get("status", "ok"),
+            }
+        except Exception:
+            logger.debug("Completion failed in kernel %s", self._session_id, exc_info=True)
+            return empty
+
     # ------------------------------------------------------------------
     # Status
     # ------------------------------------------------------------------
